@@ -6,8 +6,18 @@ import {
   O_NONBLOCK,
   SOCK_STREAM
 } from "./constants.ts";
-import { createSocketWrapper } from "./socket-wrapper.ts";
+import { createSocketWrapper, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
+
+type TStreamSocketPairResult = {
+  errno: undefined;
+  socket1: TUnixSocket;
+  socket2: TUnixSocket;
+} | {
+  errno: number;
+  socket1: undefined;
+  socket2: undefined;
+};
 
 const createSocketsFactory = ({
   syscallInterface
@@ -69,7 +79,7 @@ const createSocketsFactory = ({
     });
   };
 
-  const streamSocketPair = () => {
+  const streamSocketPair = (): TStreamSocketPairResult => {
     const { errno, fd1, fd2 } = syscallInterface.socketpair({
       domain: AF_UNIX,
       type: SOCK_STREAM,
@@ -111,4 +121,8 @@ const createSocketsFactory = ({
 
 export {
   createSocketsFactory
+};
+
+export type {
+  TStreamSocketPairResult
 };
