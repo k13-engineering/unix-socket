@@ -1,0 +1,23 @@
+{
+  "name": "@k13engineering/unix-socket",
+  "type": "module",
+  "description": "unix-socket",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "dist/lib/index.js",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/k13-engineering/unix-socket.git"
+  },
+  "author": "Simon Kadisch",
+  "license": "LGPL 2.1",
+  "bugs": {
+    "url": "https://github.com/k13-engineering/unix-socket/issues"
+  },
+  "homepage": "https://github.com/k13-engineering/unix-socket#readme"
+}
