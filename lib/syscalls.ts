@@ -3,6 +3,7 @@ import { syscall as kernelSyscall, syscallNumbers } from "syscall-napi";
 import { createControlMessageListAsBuffer, parsers, type TRawControlMessage } from "./abi.ts";
 import { pinBuffer } from "buffer2address";
 
+// eslint-disable-next-line max-statements
 const createSyscallInterface = ({
   syscall
 }: {
@@ -39,6 +40,94 @@ const createSyscallInterface = ({
         BigInt(socketFd),
         socketAddressAsBuffer,
         BigInt(socketAddressAsBuffer.length)
+      ]
+    });
+
+    if (errno !== undefined) {
+      return {
+        errno
+      };
+    }
+
+    return {
+      errno: undefined
+    };
+  };
+
+  const bind = ({ socketFd, socketAddressAsBuffer }: { socketFd: number, socketAddressAsBuffer: Uint8Array }) => {
+    const { errno } = syscall({
+      syscallNumber: syscallNumbers.bind,
+      args: [
+        BigInt(socketFd),
+        socketAddressAsBuffer,
+        BigInt(socketAddressAsBuffer.length)
+      ]
+    });
+
+    if (errno !== undefined) {
+      return {
+        errno
+      };
+    }
+
+    return {
+      errno: undefined
+    };
+  };
+
+  const listen = ({ socketFd, backlog }: { socketFd: number, backlog: number }) => {
+    const { errno } = syscall({
+      syscallNumber: syscallNumbers.listen,
+      args: [
+        BigInt(socketFd),
+        BigInt(backlog)
+      ]
+    });
+
+    if (errno !== undefined) {
+      return {
+        errno
+      };
+    }
+
+    return {
+      errno: undefined
+    };
+  };
+
+  const accept = ({ socketFd }: { socketFd: number }) => {
+    const { errno, ret } = syscall({
+      syscallNumber: syscallNumbers.accept,
+      args: [
+        BigInt(socketFd),
+        0n,
+        0n
+      ]
+    });
+
+    if (errno !== undefined) {
+      return {
+        errno,
+        socketFd: undefined
+      };
+    }
+
+    return {
+      errno: undefined,
+      socketFd: Number(ret)
+    };
+  };
+
+  const unlink = ({ path }: { path: string }) => {
+    const AT_FDCWD = BigInt(-100);
+    const pathBuffer = new TextEncoder().encode(`${path}\0`);
+
+    const { errno } = syscall({
+      syscallNumber: syscallNumbers.unlinkat,
+      args: [
+        AT_FDCWD,
+        pathBuffer,
+        0n
       ]
     });
 
@@ -305,6 +394,25 @@ const createSyscallInterface = ({
     };
   };
 
+  const close = ({ fd }: { fd: number }) => {
+    const { errno } = syscall({
+      syscallNumber: syscallNumbers.close,
+      args: [
+        BigInt(fd)
+      ]
+    });
+
+    if (errno !== undefined) {
+      return {
+        errno
+      };
+    }
+
+    return {
+      errno: undefined
+    };
+  };
+
   const dup = ({ fd }: { fd: number }) => {
     const { errno, ret } = syscall({
       syscallNumber: syscallNumbers.dup,
@@ -329,6 +437,11 @@ const createSyscallInterface = ({
   return {
     socket,
     connect,
+    bind,
+    listen,
+    accept,
+    unlink,
+    close,
     fcntl,
     recvmsg,
     sendmsg,

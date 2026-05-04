@@ -12,6 +12,21 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
     connect: () => {
       return { errno: undefined };
     },
+    bind: () => {
+      return { errno: undefined };
+    },
+    listen: () => {
+      return { errno: undefined };
+    },
+    accept: () => {
+      return { errno: undefined, socketFd: 12 };
+    },
+    unlink: () => {
+      return { errno: undefined };
+    },
+    close: () => {
+      return { errno: undefined };
+    },
     fcntl: () => {
       return { errno: undefined, ret: 0n };
     },

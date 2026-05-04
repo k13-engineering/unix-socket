@@ -6,6 +6,10 @@ import {
   O_NONBLOCK,
   SOCK_STREAM
 } from "./constants.ts";
+import {
+  createUnixStreamSocketServerWrapper,
+  type TUnixStreamSocketServer
+} from "./server-wrapper.ts";
 import { createSocketWrapper, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 
@@ -17,6 +21,14 @@ type TStreamSocketPairResult = {
   errno: number;
   socket1: undefined;
   socket2: undefined;
+};
+
+type TCreateUnixStreamSocketServerResult = {
+  error: Error;
+  server: undefined;
+} | {
+  error: undefined;
+  server: TUnixStreamSocketServer;
 };
 
 const createSocketsFactory = ({
@@ -51,10 +63,7 @@ const createSocketsFactory = ({
 
   const createUnixStreamSocketClient = ({ socketPath }: { socketPath: string }) => {
     const socketFd = createUnixSocketFd();
-
     const socketAddressAsBuffer = createUnixSocketAddressAsBuffer({ socketPath });
-
-    console.log({ socketFd });
 
     const { errno } = syscallInterface.connect({
       socketFd,
@@ -64,6 +73,14 @@ const createSocketsFactory = ({
     let connectError: Error | undefined = undefined;
 
     if (errno !== undefined) {
+
+      const { errno: closeErrno } = syscallInterface.close({
+        fd: socketFd
+      });
+
+      if (closeErrno !== undefined) {
+        throw Error(`close syscall failed with errno ${closeErrno}`);
+      }
 
       if (errno === ENOENT) {
         connectError = Error(`No such file or directory: ${socketPath}`);
@@ -77,6 +94,32 @@ const createSocketsFactory = ({
       socketFd,
       connectError
     });
+  };
+
+  const createUnixStreamSocketServer = ({ socketPath }: { socketPath: string }): TCreateUnixStreamSocketServerResult => {
+
+    const socketFd = createUnixSocketFd();
+    const socketAddressAsBuffer = createUnixSocketAddressAsBuffer({ socketPath });
+
+    const { errno: bindErrno } = syscallInterface.bind({
+      socketFd,
+      socketAddressAsBuffer
+    });
+
+    if (bindErrno !== undefined) {
+      return {
+        error: Error(`bind syscall failed with errno ${bindErrno}`),
+        server: undefined
+      };
+    }
+
+    return {
+      error: undefined,
+      server: createUnixStreamSocketServerWrapper({
+        syscallInterface,
+        serverSocketFd: socketFd
+      })
+    };
   };
 
   const streamSocketPair = (): TStreamSocketPairResult => {
@@ -115,6 +158,7 @@ const createSocketsFactory = ({
 
   return {
     createUnixStreamSocketClient,
+    createUnixStreamSocketServer,
     streamSocketPair
   };
 };
@@ -124,5 +168,6 @@ export {
 };
 
 export type {
-  TStreamSocketPairResult
+  TStreamSocketPairResult,
+  TCreateUnixStreamSocketServerResult
 };

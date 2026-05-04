@@ -41,6 +41,11 @@ describe("syscalls", () => {
 
       assert.equal(typeof iface.socket, "function");
       assert.equal(typeof iface.connect, "function");
+      assert.equal(typeof iface.bind, "function");
+      assert.equal(typeof iface.listen, "function");
+      assert.equal(typeof iface.accept, "function");
+      assert.equal(typeof iface.unlink, "function");
+      assert.equal(typeof iface.close, "function");
       assert.equal(typeof iface.fcntl, "function");
       assert.equal(typeof iface.recvmsg, "function");
       assert.equal(typeof iface.sendmsg, "function");
@@ -117,6 +122,134 @@ describe("syscalls", () => {
       });
 
       assert.equal(result.errno, 111);
+    });
+  });
+
+  describe("bind", () => {
+
+    it("should call syscall with bind number and return success", () => {
+      const { syscall, calls } = createMockSyscall();
+      const iface = createSyscallInterface({ syscall });
+
+      const socketAddressAsBuffer = new Uint8Array(16);
+      const result = iface.bind({
+        socketFd: 3,
+        socketAddressAsBuffer
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.bind);
+      assert.equal(calls[0].args[0], 3n);
+      assert.equal(calls[0].args[1], socketAddressAsBuffer);
+      assert.equal(calls[0].args[2], BigInt(socketAddressAsBuffer.length));
+    });
+
+    it("should return errno when bind fails", () => {
+      const { syscall, setNextResult } = createMockSyscall();
+      setNextResult({ errno: 98 });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.bind({
+        socketFd: 3,
+        socketAddressAsBuffer: new Uint8Array(16)
+      });
+
+      assert.equal(result.errno, 98);
+    });
+  });
+
+  describe("listen", () => {
+
+    it("should call syscall with listen number and return success", () => {
+      const { syscall, calls } = createMockSyscall();
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.listen({
+        socketFd: 3,
+        backlog: 128
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.listen);
+      assert.deepEqual(calls[0].args, [3n, 128n]);
+    });
+
+    it("should return errno when listen fails", () => {
+      const { syscall, setNextResult } = createMockSyscall();
+      setNextResult({ errno: 95 });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.listen({
+        socketFd: 3,
+        backlog: 128
+      });
+
+      assert.equal(result.errno, 95);
+    });
+  });
+
+  describe("accept", () => {
+
+    it("should call syscall with accept number and return socketFd", () => {
+      const { syscall, calls, setNextResult } = createMockSyscall();
+      setNextResult({ ret: 8n });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.accept({
+        socketFd: 3
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(result.socketFd, 8);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.accept);
+      assert.deepEqual(calls[0].args, [3n, 0n, 0n]);
+    });
+
+    it("should return errno when accept fails", () => {
+      const { syscall, setNextResult } = createMockSyscall();
+      setNextResult({ errno: 11 });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.accept({
+        socketFd: 3
+      });
+
+      assert.equal(result.errno, 11);
+      assert.equal(result.socketFd, undefined);
+    });
+  });
+
+  describe("unlink", () => {
+
+    it("should call syscall with unlinkat number and return success", () => {
+      const { syscall, calls } = createMockSyscall();
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.unlink({
+        path: "/tmp/test.sock"
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.unlinkat);
+      assert.equal(calls[0].args[0], BigInt(-100));
+      assert.deepEqual(calls[0].args[1], new TextEncoder().encode("/tmp/test.sock\0"));
+      assert.equal(calls[0].args[2], 0n);
+    });
+
+    it("should return errno when unlink fails", () => {
+      const { syscall, setNextResult } = createMockSyscall();
+      setNextResult({ errno: 2 });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.unlink({
+        path: "/tmp/test.sock"
+      });
+
+      assert.equal(result.errno, 2);
     });
   });
 
@@ -405,6 +538,35 @@ describe("syscalls", () => {
 
       assert.equal(result.errno, 9);
       assert.equal(result.fd, undefined);
+    });
+  });
+
+  describe("close", () => {
+
+    it("should call syscall with close number and return success", () => {
+      const { syscall, calls } = createMockSyscall();
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.close({
+        fd: 5
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.close);
+      assert.deepEqual(calls[0].args, [5n]);
+    });
+
+    it("should return errno when close fails", () => {
+      const { syscall, setNextResult } = createMockSyscall();
+      setNextResult({ errno: 9 });
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.close({
+        fd: 5
+      });
+
+      assert.equal(result.errno, 9);
     });
   });
 });
