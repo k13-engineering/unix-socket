@@ -23,7 +23,7 @@ const sockaddr_un = define({
   }
 });
 
-if (process.arch !== "x64") {
+if (process.arch !== "x64" && process.arch !== "arm64") {
   throw Error("not implemented yet");
 }
 
