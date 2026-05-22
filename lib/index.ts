@@ -1,5 +1,5 @@
 import { createSyscallInterface } from "./syscalls.ts";
-import { type TControlMessage, type TUnixSocket } from "./socket-wrapper.ts";
+import { createSocketWrapper, type TControlMessage, type TUnixSocket } from "./socket-wrapper.ts";
 import { syscall } from "syscall-napi";
 import {
   createSocketsFactory,
@@ -27,6 +27,14 @@ const createUnixStreamSocketServer = ({ socketPath }: { socketPath: string }): T
   });
 };
 
+const importConnectedSocket = ({ socketFd }: { socketFd: number }): TUnixSocket => {
+  return createSocketWrapper({
+    syscallInterface: linuxSyscallInterface,
+    socketFd,
+    connectError: undefined
+  });
+};
+
 const streamSocketPair = (): TStreamSocketPairResult => {
   return socketFactory.streamSocketPair();
 };
@@ -34,6 +42,7 @@ const streamSocketPair = (): TStreamSocketPairResult => {
 export {
   createUnixStreamSocketClient,
   createUnixStreamSocketServer,
+  importConnectedSocket,
   streamSocketPair
 };
 
