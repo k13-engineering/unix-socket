@@ -103,6 +103,9 @@ const createUnixStreamSocketServerWrapper = ({
 
     closed = true;
 
+    // TODO: the socket file created by bind is not removed, so it stays on disk after closing.
+    // Until it is removed, clients connecting to it get ECONNREFUSED and binding a new server to
+    // the same path fails with EADDRINUSE.
     const { errno } = syscallInterface.close({
       fd: serverSocketFd
     });

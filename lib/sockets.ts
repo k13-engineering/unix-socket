@@ -93,6 +93,8 @@ const createSocketsFactory = ({
     const socketFd = createUnixSocketFd();
     const socketAddressAsBuffer = createUnixSocketAddressAsBuffer({ socketPath });
 
+    // bind creates the socket file at socketPath and fails with EADDRINUSE if a file already exists there,
+    // e.g. one left over by a previous server, because the socket file is not removed on close (see server-wrapper.ts)
     const { errno: bindErrno } = syscallInterface.bind({
       socketFd,
       socketAddressAsBuffer
