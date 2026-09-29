@@ -495,6 +495,21 @@ describe("syscalls", () => {
       assert.equal(result.errno, 22);
       assert.equal(result.value, undefined);
     });
+
+    it("should pass the length to the kernel as a 4 byte socklen_t", () => {
+      const { syscall, calls } = createMockSyscall();
+      const iface = createSyscallInterface({ syscall });
+
+      iface.getsockopt({
+        socketFd: 3,
+        level: 1n,
+        optionName: 4n,
+        length: 16
+      });
+
+      // the kernel reads and writes exactly sizeof(socklen_t) bytes there
+      assert.deepEqual(calls[0].args[4], new Uint8Array([16, 0, 0, 0]));
+    });
   });
 
   describe("socketpair", () => {

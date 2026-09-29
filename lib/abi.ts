@@ -4,7 +4,7 @@ import type { TFieldType } from "ya-struct/dist/lib/types/index.js";
 import os from "node:os";
 import process from "node:process";
 
-const { ascii, pointer, UInt16, UInt64 } = types;
+const { ascii, pointer, UInt16 } = types;
 
 const dataModelByArch: Partial<Record<NodeJS.Architecture, TAbi["dataModel"]>> = {
   x64: "LP64",
@@ -138,13 +138,14 @@ const cmsghdr = define({
   }
 });
 
+// socklen_t
 const sockopt_length = define({
   definition: {
     type: "struct",
     fields: [
       {
         name: "length",
-        definition: UInt64
+        definition: { type: "c-type", cType: "unsigned int", fixedAbi: {} }
       }
     ],
     packed: false,
@@ -152,13 +153,14 @@ const sockopt_length = define({
   }
 });
 
+// the value of the SO_ERROR socket option
 const sockopt_error = define({
   definition: {
     type: "struct",
     fields: [
       {
         name: "error",
-        definition: UInt64
+        definition: { type: "c-type", cType: "int", fixedAbi: {} }
       }
     ],
     packed: false,
