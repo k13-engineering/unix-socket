@@ -3,6 +3,7 @@ import { describe, it } from "mocha";
 import { createSocketsFactory } from "./sockets.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 import { ENOENT } from "./constants.ts";
+import { createUnixSocketAddressAsBuffer } from "./abi.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
   return {
@@ -183,6 +184,84 @@ describe("sockets", () => {
         },
         { message: /connect syscall failed/ }
       );
+    });
+
+    it("should throw when closing the socket after a failed connect fails", () => {
+      const syscallInterface = createMockSyscallInterface({
+        connect: () => {
+          return { errno: ENOENT };
+        },
+        close: () => {
+          return { errno: 9 };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+
+      assert.throws(
+        () => {
+          factory.createUnixStreamSocketClient({ socketPath: "/tmp/missing.sock" });
+        },
+        { message: /close syscall failed with errno 9/ }
+      );
+    });
+  });
+
+  describe("createUnixStreamSocketServer", () => {
+
+    it("should create a socket, set non-blocking, and bind", () => {
+      const calls: string[] = [];
+
+      const syscallInterface = createMockSyscallInterface({
+        socket: () => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          calls.push("socket");
+          return { errno: undefined, socketFd: 7 };
+        },
+        fcntl: ({ fd }) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          calls.push("fcntl");
+          assert.equal(fd, 7);
+          return { errno: undefined, ret: 0n };
+        },
+        bind: ({ socketFd, socketAddressAsBuffer }) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          calls.push("bind");
+          assert.equal(socketFd, 7);
+          assert.deepEqual(socketAddressAsBuffer, createUnixSocketAddressAsBuffer({ socketPath: "/tmp/server.sock" }));
+          return { errno: undefined };
+        },
+        listen: ({ socketFd }) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          calls.push("listen");
+          assert.equal(socketFd, 7);
+          return { errno: undefined };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+      const { error, server } = factory.createUnixStreamSocketServer({ socketPath: "/tmp/server.sock" });
+
+      assert.equal(error, undefined);
+      assert.deepEqual(calls, ["socket", "fcntl", "bind"]);
+
+      // the returned server operates on the bound socket
+      server!.listen({ backlog: 1 });
+      assert.deepEqual(calls, ["socket", "fcntl", "bind", "listen"]);
+    });
+
+    it("should return an error when bind fails", () => {
+      const syscallInterface = createMockSyscallInterface({
+        bind: () => {
+          return { errno: 98 };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+      const { error, server } = factory.createUnixStreamSocketServer({ socketPath: "/tmp/server.sock" });
+
+      assert.equal(server, undefined);
+      assert.match(error!.message, /bind syscall failed with errno 98/);
     });
   });
 

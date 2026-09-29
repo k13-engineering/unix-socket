@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  determineAbi,
   createAbi,
   parsers,
   CMSG_ALIGN,
@@ -426,6 +427,35 @@ describe("abi", () => {
 
       assert.deepEqual(payload, new Uint8Array([0, 0, 0, 77, 1, 2, 3, 4]));
       assert.deepEqual(bigEndianAbi.parseScmRightsPayload({ data: payload }), [77, 0x01020304]);
+    });
+  });
+
+  describe("determineAbi", () => {
+
+    it("should use the LP64 data model on amd64", () => {
+      assert.deepEqual(determineAbi({ arch: "x64", endianness: "LE" }), {
+        endianness: "little",
+        compiler: "gcc",
+        dataModel: "LP64"
+      });
+    });
+
+    it("should use the LP64 data model on arm64", () => {
+      assert.equal(determineAbi({ arch: "arm64", endianness: "LE" }).dataModel, "LP64");
+    });
+
+    it("should use the ILP32 data model on arm32", () => {
+      assert.equal(determineAbi({ arch: "arm", endianness: "LE" }).dataModel, "ILP32");
+    });
+
+    it("should map big endian hosts to a big endian ABI", () => {
+      assert.equal(determineAbi({ arch: "arm64", endianness: "BE" }).endianness, "big");
+    });
+
+    it("should throw on unsupported architectures", () => {
+      assert.throws(() => {
+        determineAbi({ arch: "ia32", endianness: "LE" });
+      }, { message: /architecture ia32 not implemented yet/ });
     });
   });
 });

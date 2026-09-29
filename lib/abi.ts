@@ -12,14 +12,20 @@ const dataModelByArch: Partial<Record<NodeJS.Architecture, TAbi["dataModel"]>> =
   arm: "ILP32"
 };
 
-const determineHostAbi = (): TAbi => {
-  const dataModel = dataModelByArch[process.arch];
+const determineAbi = ({
+  arch,
+  endianness
+}: {
+  arch: NodeJS.Architecture,
+  endianness: ReturnType<typeof os.endianness>
+}): TAbi => {
+  const dataModel = dataModelByArch[arch];
   if (dataModel === undefined) {
-    throw Error(`architecture ${process.arch} not implemented yet`);
+    throw Error(`architecture ${arch} not implemented yet`);
   }
 
   return {
-    endianness: os.endianness() === "LE" ? "little" : "big",
+    endianness: endianness === "LE" ? "little" : "big",
     compiler: "gcc",
     dataModel
   };
@@ -360,9 +366,15 @@ const {
   parseControlMessagesFromBuffer,
   createScmRightsPayload,
   parseScmRightsPayload
-} = createAbi({ abi: determineHostAbi() });
+} = createAbi({
+  abi: determineAbi({
+    arch: process.arch,
+    endianness: os.endianness()
+  })
+});
 
 export {
+  determineAbi,
   createAbi,
 
   parsers,

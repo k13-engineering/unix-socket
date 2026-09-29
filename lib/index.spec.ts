@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createUnixStreamSocketClient,
@@ -9,12 +11,99 @@ import {
   streamSocketPair
 } from "./index.ts";
 
+const withTemporarySocketPath = ({ fn }: { fn: (args: { socketPath: string }) => void }) => {
+  const socketDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "unix-socket-"));
+
+  try {
+    fn({ socketPath: path.join(socketDirectory, "server.sock") });
+  } finally {
+    fs.rmSync(socketDirectory, { recursive: true, force: true });
+  }
+};
+
+const createConnectedClientAndServer = ({ socketPath }: { socketPath: string }) => {
+  const { error: serverError, server } = createUnixStreamSocketServer({ socketPath });
+  assert.equal(serverError, undefined);
+  assert.ok(server);
+
+  assert.equal(server.listen({ backlog: 1 }).error, undefined);
+
+  const client = createUnixStreamSocketClient({ socketPath });
+
+  const { error: acceptError, clientSocket } = server.accept();
+  assert.equal(acceptError, undefined);
+  assert.ok(clientSocket);
+
+  return { server, client, clientSocket };
+};
+
 describe("index", () => {
   it("should export expected functions", () => {
     assert.equal(typeof createUnixStreamSocketClient, "function");
     assert.equal(typeof createUnixStreamSocketServer, "function");
     assert.equal(typeof importConnectedSocket, "function");
     assert.equal(typeof streamSocketPair, "function");
+  });
+
+  it("should exchange data between a client and a server", () => {
+    withTemporarySocketPath({
+      fn: ({ socketPath }) => {
+        const { server, client, clientSocket } = createConnectedClientAndServer({ socketPath });
+        assert.equal(client.status().type, "open");
+
+        const { bytesSent } = client.sendmsg({
+          data: new Uint8Array([1, 2, 3]),
+          controlMessages: [],
+          flags: {}
+        });
+        assert.equal(bytesSent, 3);
+
+        const { data } = clientSocket.recvmsg({
+          count: 16,
+          maxControlMessageBytes: 64,
+          flags: {}
+        });
+        assert.deepEqual(data, new Uint8Array([1, 2, 3]));
+
+        client.close();
+        clientSocket.close();
+        server.close();
+      }
+    });
+  });
+
+  it("should report a connect error when the socket path does not exist", () => {
+    const client = createUnixStreamSocketClient({ socketPath: "/nonexistent/unix-socket.sock" });
+    assert.equal(client.status().type, "connect-error");
+    client.close();
+  });
+
+  it("should import a connected socket fd", () => {
+    const { errno, socket1, socket2 } = streamSocketPair();
+    if (errno !== undefined) {
+      throw Error(`socketpair syscall failed with errno ${errno}`);
+    }
+
+    const { socketFd } = socket1.dup();
+    const importedSocket = importConnectedSocket({ socketFd });
+    assert.equal(importedSocket.status().type, "open");
+
+    importedSocket.sendmsg({
+      data: new Uint8Array([4, 5, 6]),
+      controlMessages: [],
+      flags: {}
+    });
+
+    const { data } = socket2.recvmsg({
+      count: 16,
+      maxControlMessageBytes: 64,
+      flags: {}
+    });
+    assert.deepEqual(data, new Uint8Array([4, 5, 6]));
+
+    importedSocket.close();
+    socket1.close();
+    socket2.close();
   });
 
   it("should receive all fds passed in a single sendmsg call", () => {

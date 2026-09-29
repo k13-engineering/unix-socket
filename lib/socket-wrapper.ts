@@ -14,7 +14,6 @@ import {
 // import { createStateMachine, stateInfo, transitionTo, type TState, type TTransitionTo } from "./state-machine-v3.ts";
 import {
   createStateMachine,
-  stateInfo,
   transitionInfo,
   transitionTo,
   type TStateMachineNamespace
@@ -166,10 +165,6 @@ const createSocketWrapper = ({
     };
 
     return {
-      [stateInfo]: () => {
-        return { name: "connect-error" };
-      },
-
       status,
       dup,
       sendmsg,
@@ -332,10 +327,6 @@ const createSocketWrapper = ({
     };
 
     return {
-      [stateInfo]: () => {
-        return { name: "open" };
-      },
-
       status,
       dup,
       sendmsg,
@@ -367,10 +358,6 @@ const createSocketWrapper = ({
     };
 
     return {
-      [stateInfo]: () => {
-        return { name: "closed" };
-      },
-
       status,
       dup,
       sendmsg,
@@ -380,27 +367,7 @@ const createSocketWrapper = ({
   };
 
   const stateMachine = createStateMachine({
-    initialState: providedConnectError === undefined ? createOpenState() : createConnectErrorState({ connectError: providedConnectError }),
-
-    // logger: {
-    //   inputEvent: ({ state, event, args }) => {
-    //     console.log(`{socket ${socketFd}} [state ${state.name}] --> input event: ${event}`, args);
-    //   },
-
-    //   outputEvent: ({ state, event, args }) => {
-    //     console.log(`{socket ${socketFd}} [state ${state.name}] <-- output event: ${event}`, args);
-    //   },
-
-    //   transition: {
-    //     start: ({ from, via }) => {
-    //       console.log(`{socket ${socketFd}} [state ${from.name}] ---(${via.name})-->`);
-    //     },
-
-    //     end: ({ from, via, to }) => {
-    //       console.log(`{socket ${socketFd}} ---(${via.name})--> [state ${to.name}] (from ${from.name})`);
-    //     }
-    //   }
-    // }
+    initialState: providedConnectError === undefined ? createOpenState() : createConnectErrorState({ connectError: providedConnectError })
   }) as TSocketStateMachineNamespace["stateMachine"];
 
   const close = () => {
