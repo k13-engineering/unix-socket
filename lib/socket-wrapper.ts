@@ -6,6 +6,7 @@ import {
 } from "./abi.ts";
 import {
   EAGAIN,
+  ECONNRESET,
   EPIPE,
   MSG_CTRUNC,
   MSG_PEEK,
@@ -145,6 +146,28 @@ const createSocketWrapper = ({
     };
   };
 
+  const transitionToRemoteResetState = (): T => {
+    return {
+      [transitionInfo]: { name: "remote-reset" },
+      perform: () => {
+        // eslint-disable-next-line no-use-before-define
+        return createRemoteResetState();
+      }
+    };
+  };
+
+  const commonClose: E["close"] = () => {
+    const { errno: closeErrno } = syscallInterface.close({
+      fd: socketFd
+    });
+
+    // Linux releases the fd even if close fails, so the socket is closed in any case
+    return {
+      closeErrno,
+      [transitionTo]: transitionToClosedState()
+    };
+  };
+
   const commonDup = () => {
     const { errno, fd: duppedFd } = syscallInterface.dup({
       fd: socketFd
@@ -270,6 +293,13 @@ const createSocketWrapper = ({
           };
         }
 
+        if (errno === ECONNRESET) {
+          return {
+            bytesSent: 0,
+            [transitionTo]: transitionToRemoteResetState()
+          };
+        }
+
         throw Error(`sendmsg syscall failed with errno ${errno}`);
       }
 
@@ -278,7 +308,29 @@ const createSocketWrapper = ({
       };
     };
 
-    // eslint-disable-next-line complexity
+    const nothingReceived = () => {
+      return {
+        data: new Uint8Array(0),
+        controlMessages: [],
+        flags: noReceivedFlags
+      };
+    };
+
+    const handleRecvmsgErrno = ({ errno }: { errno: number }) => {
+      if (errno === EAGAIN) {
+        return nothingReceived();
+      }
+
+      if (errno === ECONNRESET) {
+        return {
+          ...nothingReceived(),
+          [transitionTo]: transitionToRemoteResetState()
+        };
+      }
+
+      throw Error(`recvmsg syscall failed with errno ${errno}`);
+    };
+
     const recvmsg: E["recvmsg"] = ({ count, maxControlMessageBytes, flags }) => {
 
       const buffer = new Uint8Array(count);
@@ -298,16 +350,7 @@ const createSocketWrapper = ({
       });
 
       if (errno !== undefined) {
-
-        if (errno === EAGAIN) {
-          return {
-            data: new Uint8Array(0),
-            controlMessages: [],
-            flags: noReceivedFlags
-          };
-        }
-
-        throw Error(`recvmsg syscall failed with errno ${errno}`);
+        return handleRecvmsgErrno({ errno });
       }
 
       if (bytesReceived === 0) {
@@ -347,16 +390,33 @@ const createSocketWrapper = ({
       };
     };
 
-    const close: E["close"] = () => {
-      const { errno: closeErrno } = syscallInterface.close({
-        fd: socketFd
-      });
+    return {
+      status,
+      dup,
+      sendmsg,
+      recvmsg,
+      close: commonClose
+    };
+  };
 
-      // Linux releases the fd even if close fails, so the socket is closed in any case
+  const createRemoteResetState = (): TConnectionState => {
+
+    const status = (): TUnixSocketStatus => {
       return {
-        closeErrno,
-        [transitionTo]: transitionToClosedState()
+        type: "remote-reset"
       };
+    };
+
+    // the connection is gone, only the socket fd is left to be closed
+    const dup: E["dup"] = () => {
+      return raiseInvalidState();
+    };
+
+    const sendmsg: E["sendmsg"] = () => {
+      return raiseInvalidState();
+    };
+    const recvmsg: E["recvmsg"] = () => {
+      return raiseInvalidState();
     };
 
     return {
@@ -364,7 +424,7 @@ const createSocketWrapper = ({
       dup,
       sendmsg,
       recvmsg,
-      close
+      close: commonClose
     };
   };
 

@@ -5,6 +5,7 @@ import type { TSyscallInterface } from "./syscalls.ts";
 import {
   EAGAIN,
   ECONNREFUSED,
+  ECONNRESET,
   EPIPE,
   MSG_CTRUNC,
   MSG_TRUNC,
@@ -344,6 +345,29 @@ describe("socket-wrapper", () => {
       }
     });
 
+    it("should transition to remote-reset state when sendmsg reports ECONNRESET", () => {
+      const syscallInterface = createMockSyscallInterface({
+        sendmsg: () => {
+          return { errno: ECONNRESET, bytesSent: undefined };
+        }
+      });
+
+      const wrapper = createSocketWrapper({
+        syscallInterface,
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      const result = wrapper.sendmsg({
+        data: new Uint8Array([1]),
+        controlMessages: [],
+        flags: {}
+      });
+
+      assert.equal(result.bytesSent, 0);
+      assert.deepEqual(wrapper.status(), { type: "remote-reset" });
+    });
+
     it("should throw on unexpected sendmsg errno", () => {
       const syscallInterface = createMockSyscallInterface({
         sendmsg: () => {
@@ -549,6 +573,31 @@ describe("socket-wrapper", () => {
         assert.equal(status.remote.writing, false);
         assert.equal(status.remote.reading, true);
       }
+    });
+
+    it("should transition to remote-reset state when recvmsg reports ECONNRESET", () => {
+      const syscallInterface = createMockSyscallInterface({
+        recvmsg: () => {
+          return { errno: ECONNRESET, controlMessages: undefined, bytesReceived: undefined, msgFlags: undefined };
+        }
+      });
+
+      const wrapper = createSocketWrapper({
+        syscallInterface,
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      const result = wrapper.recvmsg({
+        count: 1024,
+        maxControlMessageBytes: 256,
+        flags: {}
+      });
+
+      assert.equal(result.data.length, 0);
+      assert.deepEqual(result.controlMessages, []);
+      assert.deepEqual(result.flags, { trunc: false, ctrunc: false });
+      assert.deepEqual(wrapper.status(), { type: "remote-reset" });
     });
 
     it("should throw on unexpected recvmsg errno", () => {
@@ -794,6 +843,93 @@ describe("socket-wrapper", () => {
         },
         { message: /unsupported control message received/ }
       );
+    });
+  });
+
+  describe("remote-reset state", () => {
+
+    const createRemoteResetWrapper = ({ close }: { close: TSyscallInterface["close"] }) => {
+      const wrapper = createSocketWrapper({
+        syscallInterface: createMockSyscallInterface({
+          recvmsg: () => {
+            return { errno: ECONNRESET, controlMessages: undefined, bytesReceived: undefined, msgFlags: undefined };
+          },
+          close
+        }),
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      wrapper.recvmsg({ count: 1024, maxControlMessageBytes: 256, flags: {} });
+      assert.equal(wrapper.status().type, "remote-reset");
+
+      return wrapper;
+    };
+
+    [
+      {
+        operation: "dup",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.dup();
+        }
+      },
+      {
+        operation: "sendmsg",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.sendmsg({ data: new Uint8Array([1]), controlMessages: [], flags: {} });
+        }
+      },
+      {
+        operation: "recvmsg",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.recvmsg({ count: 1024, maxControlMessageBytes: 256, flags: {} });
+        }
+      }
+    ].forEach(({ operation, call }) => {
+      it(`should throw invalid state on ${operation}`, () => {
+        const wrapper = createRemoteResetWrapper({
+          close: () => {
+            return { errno: undefined };
+          }
+        });
+
+        assert.throws(() => {
+          call(wrapper);
+        }, { message: /invalid state/ });
+
+        assert.equal(wrapper.status().type, "remote-reset");
+      });
+    });
+
+    it("should close the socket fd on close and transition to closed state", () => {
+      const closedFds: number[] = [];
+
+      const wrapper = createRemoteResetWrapper({
+        close: ({ fd }) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          closedFds.push(fd);
+          return { errno: undefined };
+        }
+      });
+
+      wrapper.close();
+
+      assert.deepEqual(closedFds, [5]);
+      assert.equal(wrapper.status().type, "closed");
+    });
+
+    it("should throw on close syscall failure, but still transition to closed state", () => {
+      const wrapper = createRemoteResetWrapper({
+        close: () => {
+          return { errno: 5 };
+        }
+      });
+
+      assert.throws(() => {
+        wrapper.close();
+      }, { message: /close syscall failed with errno 5/ });
+
+      assert.equal(wrapper.status().type, "closed");
     });
   });
 

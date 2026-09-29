@@ -248,6 +248,34 @@ describe("index", () => {
     socket2.close();
   });
 
+  it("should report remote-reset when the peer closes with unread data", () => {
+    const { socket1, socket2 } = streamSocketPair();
+    assert.ok(socket1);
+    assert.ok(socket2);
+
+    socket1.sendmsg({
+      data: new Uint8Array([1]),
+      controlMessages: [],
+      flags: {}
+    });
+
+    // closing with data still in the receive queue resets the connection
+    socket2.close();
+
+    const { data } = socket1.recvmsg({
+      count: 16,
+      maxControlMessageBytes: 0,
+      flags: {}
+    });
+
+    const statusAfterReset = socket1.status();
+    socket1.close();
+
+    assert.equal(data.length, 0);
+    assert.deepEqual(statusAfterReset, { type: "remote-reset" });
+    assert.equal(socket1.status().type, "closed");
+  });
+
   it("should import a connected socket fd", () => {
     const { errno, socket1, socket2 } = streamSocketPair();
     if (errno !== undefined) {

@@ -12,6 +12,7 @@ const ENOTDIR = 20;
 const ELOOP = 40;
 const EPROTOTYPE = 91;
 const ECONNREFUSED = 111;
+const ECONNRESET = 104;
 
 const F_GETFL = BigInt(3);
 const F_SETFL = BigInt(4);
@@ -41,6 +42,7 @@ export {
   ELOOP,
   EPROTOTYPE,
   ECONNREFUSED,
+  ECONNRESET,
 
   F_GETFL,
   F_SETFL,

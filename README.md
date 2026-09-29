@@ -13,10 +13,13 @@ This library follows the LBYL ("look before you leap") style. Every socket is in
 | `status().type`   | `dup` | `sendmsg` | `recvmsg` | `close` |
 | ----------------- | :---: | :-------: | :-------: | :-----: |
 | `"open"`          | ✓     | ✓         | ✓         | ✓       |
+| `"remote-reset"`  | ✗     | ✗         | ✗         | ✓       |
 | `"connect-error"` | ✗     | ✗         | ✗         | ✗       |
 | `"closed"`        | ✗     | ✗         | ✗         | ✗       |
 
 Calling an operation that isn't allowed throws an `invalid state` error. A socket in the `"connect-error"` state holds no file descriptor, so there is nothing to close.
+
+A socket moves from `"open"` to `"remote-reset"` when the peer resets the connection, for example by closing its end while data it hasn't read is still queued. The `sendmsg` or `recvmsg` call that notices the reset returns as if nothing was sent or received. After that the connection is gone and the socket only needs to be closed.
 
 Exceptions signal programming errors and unexpected failures. They are not meant to be caught: let them crash the process. Conditions a program is expected to handle are reported through `status()` and return values instead.
 
