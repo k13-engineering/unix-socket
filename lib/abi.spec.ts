@@ -12,6 +12,13 @@ import {
 } from "./abi.ts";
 import { SCM_RIGHTS, SOL_SOCKET } from "./constants.ts";
 import { describe, it } from "mocha";
+import process from "node:process";
+
+const structSizesOf = ({ parsers: parsersToMeasure }: { parsers: Record<string, { size: number }> }) => {
+  return Object.fromEntries(Object.entries(parsersToMeasure).map(([structName, parser]) => {
+    return [structName, parser.size];
+  }));
+};
 
 describe("abi", () => {
 
@@ -309,13 +316,29 @@ describe("abi", () => {
 
   describe("createAbi", () => {
 
-    // reference values produced by gcc and glibc on the respective architecture
+    // reference values produced by gcc and glibc on the respective architecture - the kernel reads and
+    // writes these structs in full, so any difference in size or layout corrupts memory
     const lp64LittleEndian = {
       abi: { endianness: "little", compiler: "gcc", dataModel: "LP64" },
       expected: {
-        cmsghdrSize: 16,
-        iovecSize: 16,
-        sockaddrUnSize: 110,
+        structSizes: {
+          sockaddr_un: 110,
+          iovec: 16,
+          msghdr: 56,
+          cmsghdr: 16,
+          // socklen_t
+          sockopt_length: 4,
+          // int
+          sockopt_error: 4,
+          // int[2]
+          socketpair_sv: 8,
+          // int
+          scm_rights_fd: 4
+        },
+        iovecOffsets: {
+          iov_base: 0,
+          iov_len: 8
+        },
         msghdrOffsets: {
           msg_name: 0,
           msg_namelen: 8,
@@ -342,9 +365,20 @@ describe("abi", () => {
         name: "arm32",
         abi: { endianness: "little", compiler: "gcc", dataModel: "ILP32" },
         expected: {
-          cmsghdrSize: 12,
-          iovecSize: 8,
-          sockaddrUnSize: 110,
+          structSizes: {
+            sockaddr_un: 110,
+            iovec: 8,
+            msghdr: 28,
+            cmsghdr: 12,
+            sockopt_length: 4,
+            sockopt_error: 4,
+            socketpair_sv: 8,
+            scm_rights_fd: 4
+          },
+          iovecOffsets: {
+            iov_base: 0,
+            iov_len: 4
+          },
           msghdrOffsets: {
             msg_name: 0,
             msg_namelen: 4,
@@ -371,10 +405,16 @@ describe("abi", () => {
 
         const archAbi = createAbi({ abi });
 
-        it("should size structs like gcc", () => {
-          assert.equal(archAbi.parsers.cmsghdr.size, expected.cmsghdrSize);
-          assert.equal(archAbi.parsers.iovec.size, expected.iovecSize);
-          assert.equal(archAbi.parsers.sockaddr_un.size, expected.sockaddrUnSize);
+        it("should size every struct like gcc", () => {
+          // comparing all parsers at once makes a struct without reference size fail as well
+          assert.deepEqual(structSizesOf({ parsers: archAbi.parsers }), expected.structSizes);
+        });
+
+        it("should lay out iovec fields like gcc", () => {
+          const iovec = archAbi.parsers.iovec.format({ value: { iov_base: 1n, iov_len: 2n } });
+
+          assert.equal(iovec[expected.iovecOffsets.iov_base], 1);
+          assert.equal(iovec[expected.iovecOffsets.iov_len], 2);
         });
 
         it("should lay out msghdr fields like gcc", () => {
@@ -419,6 +459,21 @@ describe("abi", () => {
           assert.deepEqual(archAbi.parseScmRightsPayload({ data: messages[0].data }), [77, 78]);
         });
       });
+    });
+
+    it("should use the struct sizes of the host architecture", () => {
+      const architectureNames: Record<string, string> = {
+        x64: "amd64",
+        arm64: "arm64",
+        arm: "arm32"
+      };
+
+      const hostArchitecture = architectures.find(({ name }) => {
+        return name === architectureNames[process.arch];
+      });
+      assert.ok(hostArchitecture, `no reference values for ${process.arch}`);
+
+      assert.deepEqual(structSizesOf({ parsers }), hostArchitecture.expected.structSizes);
     });
 
     it("should encode fds with the endianness of the ABI", () => {

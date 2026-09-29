@@ -2,8 +2,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createSyscallInterface } from "./syscalls.ts";
 import { syscallNumbers } from "syscall-napi";
-import { parsers, type TRawControlMessage } from "./abi.ts";
-import { MSG_CTRUNC, MSG_TRUNC } from "./constants.ts";
+import {
+  createControlMessageListAsBuffer,
+  createScmRightsPayload,
+  parsers,
+  type TRawControlMessage
+} from "./abi.ts";
+import {
+  MSG_CTRUNC,
+  MSG_TRUNC,
+  SCM_RIGHTS,
+  SOL_SOCKET
+} from "./constants.ts";
+import { address2buffer } from "buffer2address";
 
 type TSyscallArgs = {
   syscallNumber: bigint,
@@ -30,6 +41,17 @@ const createMockSyscall = () => {
   };
 
   return { syscall, calls, setNextResult };
+};
+
+// follows the pointers of a msghdr like the kernel does, returning the memory each iovec describes
+const memoryOfIovecs = ({ msghdr }: { msghdr: ReturnType<typeof parsers.msghdr.parse> }) => {
+  const iovecCount = Number(msghdr.msg_iovlen);
+  const iovecs = address2buffer({ address: msghdr.msg_iov, size: iovecCount * parsers.iovec.size });
+
+  return [...Array(iovecCount).keys()].map((index) => {
+    const iovec = parsers.iovec.parse({ data: iovecs.subarray(index * parsers.iovec.size) });
+    return address2buffer({ address: iovec.iov_base, size: Number(iovec.iov_len) });
+  });
 };
 
 describe("syscalls", () => {
@@ -533,6 +555,89 @@ describe("syscalls", () => {
       });
 
       assert.deepEqual(result.value, new Uint8Array([111, 0, 0, 0]));
+    });
+  });
+
+  describe("memory handed to the kernel", () => {
+
+    it("should describe exactly the receive buffers in the msghdr of recvmsg", () => {
+      const dataBuffers = [new Uint8Array(3), new Uint8Array(5)];
+      const controlMessageBuffer = new Uint8Array(24);
+      let msghdrSize = 0;
+
+      const syscall = ({ args }: TSyscallArgs) => {
+        const msghdrBuffer = args[1] as Uint8Array;
+        msghdrSize = msghdrBuffer.length;
+        const msghdr = parsers.msghdr.parse({ data: msghdrBuffer });
+
+        // write through the pointers and lengths like the kernel does
+        memoryOfIovecs({ msghdr }).forEach((memory, index) => {
+          memory.fill(index + 1);
+        });
+        address2buffer({ address: msghdr.msg_control, size: Number(msghdr.msg_controllen) }).fill(9);
+
+        return { errno: undefined, ret: 8n };
+      };
+
+      const iface = createSyscallInterface({ syscall });
+      iface.recvmsg({ socketFd: 3, dataBuffers, controlMessageBuffer, flags: 0n });
+
+      // the kernel always copies sizeof(struct msghdr) bytes
+      assert.equal(msghdrSize, parsers.msghdr.size);
+      assert.deepEqual(dataBuffers, [new Uint8Array([1, 1, 1]), new Uint8Array([2, 2, 2, 2, 2])]);
+      assert.deepEqual(controlMessageBuffer, new Uint8Array(24).fill(9));
+    });
+
+    it("should describe exactly the send buffers in the msghdr of sendmsg", () => {
+      const controlMessages: TRawControlMessage[] = [
+        { level: SOL_SOCKET, type: SCM_RIGHTS, data: createScmRightsPayload({ fds: [7] }) }
+      ];
+      let sent: { msghdrSize: number, data: number[][], control: number[] } | undefined;
+
+      const syscall = ({ args }: TSyscallArgs) => {
+        const msghdrBuffer = args[1] as Uint8Array;
+        const msghdr = parsers.msghdr.parse({ data: msghdrBuffer });
+
+        // read through the pointers and lengths like the kernel does
+        sent = {
+          msghdrSize: msghdrBuffer.length,
+          data: memoryOfIovecs({ msghdr }).map((memory) => {
+            return Array.from(memory);
+          }),
+          control: Array.from(address2buffer({ address: msghdr.msg_control, size: Number(msghdr.msg_controllen) }))
+        };
+
+        return { errno: undefined, ret: 5n };
+      };
+
+      const iface = createSyscallInterface({ syscall });
+      iface.sendmsg({
+        socketFd: 3,
+        dataBuffers: [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])],
+        controlMessages,
+        flags: 0n
+      });
+
+      assert.deepEqual(sent, {
+        msghdrSize: parsers.msghdr.size,
+        data: [[1, 2, 3], [4, 5]],
+        control: Array.from(createControlMessageListAsBuffer({ controlMessages }))
+      });
+    });
+
+    it("should read both fds from the int[2] socketpair writes", () => {
+      const syscall = ({ args }: TSyscallArgs) => {
+        // the kernel writes two ints to the address passed as last argument
+        const sv = address2buffer({ address: args[3] as bigint, size: parsers.socketpair_sv.size });
+        sv.set(parsers.socketpair_sv.format({ value: { fd1: 21n, fd2: 22n } }));
+
+        return { errno: undefined, ret: 0n };
+      };
+
+      const iface = createSyscallInterface({ syscall });
+      const result = iface.socketpair({ domain: 1n, type: 1n, protocol: 0n });
+
+      assert.deepEqual(result, { errno: undefined, fd1: 21, fd2: 22 });
     });
   });
 
