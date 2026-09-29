@@ -351,7 +351,7 @@ const createSyscallInterface = ({
       };
     }
 
-    const actualLength = parsers.sockopt_length.parse({
+    const { length: actualLength } = parsers.sockopt_length.parse({
       data: lengthBuffer,
     });
 

@@ -510,6 +510,30 @@ describe("syscalls", () => {
       // the kernel reads and writes exactly sizeof(socklen_t) bytes there
       assert.deepEqual(calls[0].args[4], new Uint8Array([16, 0, 0, 0]));
     });
+
+    it("should return the value cut to the length written back by the kernel", () => {
+      const syscall = ({ args }: TSyscallArgs) => {
+        const valueBuffer = args[3] as Uint8Array;
+        const lengthBuffer = args[4] as Uint8Array;
+
+        // like the kernel does for an int option such as SO_ERROR
+        valueBuffer.set([111, 0, 0, 0]);
+        lengthBuffer.set(parsers.sockopt_length.format({ value: { length: 4n } }));
+
+        return { errno: undefined, ret: 0n };
+      };
+
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.getsockopt({
+        socketFd: 3,
+        level: 1n,
+        optionName: 4n,
+        length: 16
+      });
+
+      assert.deepEqual(result.value, new Uint8Array([111, 0, 0, 0]));
+    });
   });
 
   describe("socketpair", () => {
