@@ -300,15 +300,26 @@ const createSocketWrapper = ({
 
       const rawControlMessages = parseControlMessagesFromBuffer({ buffer: controlMessageBuffer });
 
-      const controlMessages = rawControlMessages.map((rawControlMessage): TControlMessage => {
+      const controlMessages = rawControlMessages.flatMap((rawControlMessage): TControlMessage[] => {
         if (rawControlMessage.level === SOL_SOCKET && rawControlMessage.type === SCM_RIGHTS) {
-          const fd = new DataView(rawControlMessage.data.buffer).getInt32(0, true);
+          // the kernel merges all fds of a sendmsg call into a single SCM_RIGHTS message,
+          // so it may carry more than one fd
+          // TODO: size and endianness for different architectures
+          const fdSize = 4;
+          const fdCount = Math.floor(rawControlMessage.data.length / fdSize);
+          const dataView = new DataView(
+            rawControlMessage.data.buffer,
+            rawControlMessage.data.byteOffset,
+            rawControlMessage.data.byteLength
+          );
 
-          return {
-            level: "SOL_SOCKET",
-            type: "SCM_RIGHTS",
-            fd
-          };
+          return [...Array(fdCount).keys()].map((index): TControlMessage => {
+            return {
+              level: "SOL_SOCKET",
+              type: "SCM_RIGHTS",
+              fd: dataView.getInt32(index * fdSize, true)
+            };
+          });
         }
 
         throw Error(`unsupported control message received`);

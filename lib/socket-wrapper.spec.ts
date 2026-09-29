@@ -577,6 +577,103 @@ describe("socket-wrapper", () => {
       assert.equal(result.controlMessages[0].fd, 77);
     });
 
+    it("should return every fd of a SCM_RIGHTS control message carrying multiple fds", () => {
+      const syscallInterface = createMockSyscallInterface({
+        recvmsg: ({ controlMessageBuffer }) => {
+          // the kernel merges all fds of a sendmsg call into a single SCM_RIGHTS message
+          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+
+          const fdPayload = new Uint8Array(12);
+          const fdPayloadView = new DataView(fdPayload.buffer);
+          fdPayloadView.setInt32(0, 77, true);
+          fdPayloadView.setInt32(4, 78, true);
+          fdPayloadView.setInt32(8, 79, true);
+
+          const header = parsers.cmsghdr.format({
+            value: {
+              cmsg_len: BigInt(alignedHeaderSize + fdPayload.length),
+              cmsg_level: SOL_SOCKET,
+              cmsg_type: SCM_RIGHTS
+            }
+          });
+
+          controlMessageBuffer.set(header, 0);
+          controlMessageBuffer.set(fdPayload, alignedHeaderSize);
+
+          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+        }
+      });
+
+      const wrapper = createSocketWrapper({
+        syscallInterface,
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      const result = wrapper.recvmsg({
+        count: 1024,
+        maxControlMessageBytes: 256,
+        flags: {}
+      });
+
+      assert.deepEqual(result.controlMessages, [
+        { level: "SOL_SOCKET", type: "SCM_RIGHTS", fd: 77 },
+        { level: "SOL_SOCKET", type: "SCM_RIGHTS", fd: 78 },
+        { level: "SOL_SOCKET", type: "SCM_RIGHTS", fd: 79 }
+      ]);
+    });
+
+    it("should return fds of multiple SCM_RIGHTS control messages in order", () => {
+      const syscallInterface = createMockSyscallInterface({
+        recvmsg: ({ controlMessageBuffer }) => {
+          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+
+          const writeControlMessage = ({ offset, fds }: { offset: number, fds: number[] }) => {
+            const fdPayload = new Uint8Array(fds.length * 4);
+            [...fds.keys()].forEach((index) => {
+              new DataView(fdPayload.buffer).setInt32(index * 4, fds[index], true);
+            });
+
+            const header = parsers.cmsghdr.format({
+              value: {
+                cmsg_len: BigInt(alignedHeaderSize + fdPayload.length),
+                cmsg_level: SOL_SOCKET,
+                cmsg_type: SCM_RIGHTS
+              }
+            });
+
+            controlMessageBuffer.set(header, offset);
+            controlMessageBuffer.set(fdPayload, offset + alignedHeaderSize);
+
+            return offset + alignedHeaderSize + Math.ceil(fdPayload.length / 8) * 8;
+          };
+
+          const nextOffset = writeControlMessage({ offset: 0, fds: [77, 78] });
+          writeControlMessage({ offset: nextOffset, fds: [79] });
+
+          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+        }
+      });
+
+      const wrapper = createSocketWrapper({
+        syscallInterface,
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      const result = wrapper.recvmsg({
+        count: 1024,
+        maxControlMessageBytes: 256,
+        flags: {}
+      });
+
+      const receivedFds = result.controlMessages.map(({ fd }) => {
+        return fd;
+      });
+
+      assert.deepEqual(receivedFds, [77, 78, 79]);
+    });
+
     it("should throw on unsupported received control message", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ controlMessageBuffer }) => {
