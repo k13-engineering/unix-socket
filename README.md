@@ -6,6 +6,10 @@ Synchronous, non-blocking Unix domain stream sockets for Node.js on Linux, inclu
 
 All sockets are in non-blocking mode, so no call ever waits. `importConnectedSocket` switches the fd it is given to non-blocking mode. This also affects every other fd that shares its open file description, for example the fd it was dupped from.
 
+## Close-on-exec
+
+Every fd the library opens or hands out has close-on-exec set, so child processes don't inherit it. That covers sockets, accepted connections, fds returned by `dup()` and fds received through `SCM_RIGHTS`. `importConnectedSocket` sets close-on-exec on the fd it takes over. To give an fd to a child process, pass it in the `stdio` option of `child_process`, which hands it over without the flag.
+
 ## Error handling: look before you leap
 
 This library follows the LBYL ("look before you leap") style. Every socket is in one state, which `status()` reports. Check the state before calling an operation, because each operation is only allowed in some states:

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createUnixStreamSocketServerWrapper } from "./server-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
-import { SOCK_NONBLOCK } from "./constants.ts";
+import { F_DUPFD_CLOEXEC, SOCK_CLOEXEC, SOCK_NONBLOCK } from "./constants.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
   return {
@@ -41,9 +41,6 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
     },
     socketpair: () => {
       return { errno: undefined, fd1: 10, fd2: 11 };
-    },
-    dup: () => {
-      return { errno: undefined, fd: 20 };
     },
     ...overrides
   };
@@ -135,7 +132,7 @@ describe("server-wrapper", () => {
       assert.ok(result.clientSocket !== undefined);
     });
 
-    it("should accept on the server socket fd with the accepted socket being non-blocking", () => {
+    it("should accept on the server socket fd with the accepted socket being non-blocking and close-on-exec", () => {
       let acceptArgs: { socketFd: number, flags: bigint } | undefined;
 
       const server = createUnixStreamSocketServerWrapper({
@@ -150,7 +147,7 @@ describe("server-wrapper", () => {
 
       server.accept();
 
-      assert.deepEqual(acceptArgs, { socketFd: 5, flags: SOCK_NONBLOCK });
+      assert.deepEqual(acceptArgs, { socketFd: 5, flags: SOCK_NONBLOCK | SOCK_CLOEXEC });
     });
 
     it("should return undefined clientSocket on EAGAIN", () => {
@@ -202,11 +199,14 @@ describe("server-wrapper", () => {
 
   describe("dup", () => {
 
-    it("should return dupped server socket fd on success", () => {
+    it("should dup the server socket fd with close-on-exec and return the new fd", () => {
+      let fcntlArgs: { fd: number, cmd: bigint, arg: bigint } | undefined;
+
       const server = createUnixStreamSocketServerWrapper({
         syscallInterface: createMockSyscallInterface({
-          dup: () => {
-            return { errno: undefined, fd: 25 };
+          fcntl: (args) => {
+            fcntlArgs = args;
+            return { errno: undefined, ret: 25n };
           }
         }),
         serverSocketFd: 5
@@ -215,31 +215,14 @@ describe("server-wrapper", () => {
       const result = server.dup();
 
       assert.equal(result.serverSocketFd, 25);
+      assert.deepEqual(fcntlArgs, { fd: 5, cmd: F_DUPFD_CLOEXEC, arg: 0n });
     });
 
-    it("should pass the server socket fd to dup syscall", () => {
-      let dupArgs: { fd: number } | undefined;
-
+    it("should throw when dupping fails", () => {
       const server = createUnixStreamSocketServerWrapper({
         syscallInterface: createMockSyscallInterface({
-          dup: (args) => {
-            dupArgs = args;
-            return { errno: undefined, fd: 25 };
-          }
-        }),
-        serverSocketFd: 5
-      });
-
-      server.dup();
-
-      assert.deepEqual(dupArgs, { fd: 5 });
-    });
-
-    it("should throw when dup syscall fails", () => {
-      const server = createUnixStreamSocketServerWrapper({
-        syscallInterface: createMockSyscallInterface({
-          dup: () => {
-            return { errno: 24, fd: undefined };
+          fcntl: () => {
+            return { errno: 24, ret: undefined };
           }
         }),
         serverSocketFd: 5
@@ -247,7 +230,7 @@ describe("server-wrapper", () => {
 
       assert.throws(() => {
         server.dup();
-      }, /dup syscall failed with errno 24/);
+      }, /fcntl syscall failed with errno 24/);
     });
 
     it("should throw when called after close", () => {

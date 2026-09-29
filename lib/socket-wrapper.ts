@@ -8,6 +8,8 @@ import {
   EAGAIN,
   ECONNRESET,
   EPIPE,
+  F_DUPFD_CLOEXEC,
+  MSG_CMSG_CLOEXEC,
   MSG_CTRUNC,
   MSG_PEEK,
   MSG_TRUNC,
@@ -169,16 +171,19 @@ const createSocketWrapper = ({
   };
 
   const commonDup = () => {
-    const { errno, fd: duppedFd } = syscallInterface.dup({
-      fd: socketFd
+    // like dup, but the new fd is close-on-exec as well
+    const { errno, ret: duppedFd } = syscallInterface.fcntl({
+      fd: socketFd,
+      cmd: F_DUPFD_CLOEXEC,
+      arg: 0n
     });
 
     if (errno !== undefined) {
-      throw Error(`dup syscall failed with errno ${errno}`);
+      throw Error(`fcntl syscall failed with errno ${errno}`);
     }
 
     return {
-      socketFd: duppedFd
+      socketFd: Number(duppedFd)
     };
   };
 
@@ -336,7 +341,8 @@ const createSocketWrapper = ({
       const buffer = new Uint8Array(count);
       const controlMessageBuffer = new Uint8Array(maxControlMessageBytes);
 
-      let rawFlags = 0n;
+      // received fds are installed close-on-exec
+      let rawFlags = MSG_CMSG_CLOEXEC;
 
       if (flags.peek) {
         rawFlags |= MSG_PEEK;

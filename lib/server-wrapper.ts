@@ -1,4 +1,4 @@
-import { SOCK_NONBLOCK } from "./constants.ts";
+import { F_DUPFD_CLOEXEC, SOCK_CLOEXEC, SOCK_NONBLOCK } from "./constants.ts";
 import { createSocketWrapper, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 
@@ -54,10 +54,10 @@ const createUnixStreamSocketServerWrapper = ({
       throw Error("already closed");
     }
 
-    // accepted sockets don't inherit O_NONBLOCK from the server socket
+    // accepted sockets don't inherit O_NONBLOCK and close-on-exec from the server socket
     const { errno, socketFd } = syscallInterface.accept({
       socketFd: serverSocketFd,
-      flags: SOCK_NONBLOCK
+      flags: SOCK_NONBLOCK | SOCK_CLOEXEC
     });
 
     if (errno !== undefined) {
@@ -85,15 +85,18 @@ const createUnixStreamSocketServerWrapper = ({
       throw Error("already closed");
     }
 
-    const { errno, fd: duppedServerSocketFd } = syscallInterface.dup({
-      fd: serverSocketFd
+    // like dup, but the new fd is close-on-exec as well
+    const { errno, ret: duppedServerSocketFd } = syscallInterface.fcntl({
+      fd: serverSocketFd,
+      cmd: F_DUPFD_CLOEXEC,
+      arg: 0n
     });
 
     if (errno !== undefined) {
-      throw Error(`dup syscall failed with errno ${errno}`);
+      throw Error(`fcntl syscall failed with errno ${errno}`);
     }
 
-    return { serverSocketFd: duppedServerSocketFd };
+    return { serverSocketFd: Number(duppedServerSocketFd) };
   };
 
   const close: TUnixStreamSocketServer["close"] = () => {

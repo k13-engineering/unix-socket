@@ -12,9 +12,13 @@ import {
   ENOTDIR,
   EPERM,
   EPROTOTYPE,
+  F_GETFD,
   F_GETFL,
+  F_SETFD,
   F_SETFL,
+  FD_CLOEXEC,
   O_NONBLOCK,
+  SOCK_CLOEXEC,
   SOCK_NONBLOCK,
   SOCK_STREAM
 } from "./constants.ts";
@@ -58,9 +62,6 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
     socketpair: () => {
       return { errno: undefined, fd1: 10, fd2: 11 };
     },
-    dup: () => {
-      return { errno: undefined, fd: 20 };
-    },
     ...overrides
   };
 };
@@ -89,7 +90,7 @@ describe("sockets", () => {
           // eslint-disable-next-line fp/no-mutating-methods
           calls.push("socket");
           assert.equal(domain, AF_UNIX);
-          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK);
+          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
           assert.equal(protocol, 0n);
           return { errno: undefined, socketFd: 7 };
         },
@@ -296,7 +297,7 @@ describe("sockets", () => {
       const syscallInterface = createMockSyscallInterface({
         socketpair: ({ domain, type, protocol }) => {
           assert.equal(domain, AF_UNIX);
-          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK);
+          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC);
           assert.equal(protocol, 0n);
           return { errno: undefined, fd1: 10, fd2: 11 };
         }
@@ -357,16 +358,18 @@ describe("sockets", () => {
 
   describe("importConnectedSocket", () => {
 
-    it("should switch the fd to non-blocking mode, keeping its other file status flags", () => {
+    it("should switch the fd to non-blocking and close-on-exec mode, keeping its other flags", () => {
       const fcntlCalls: { fd: number, cmd: bigint, arg: bigint }[] = [];
-      // O_APPEND, standing in for any flag the fd already has
-      const existingFlags = 1024n;
+      // O_APPEND, standing in for any file status flag the fd already has
+      const existingFileStatusFlags = 1024n;
+      // no fd flags other than close-on-exec exist, so this stands in for future ones
+      const existingFdFlags = 2n;
 
       const syscallInterface = createMockSyscallInterface({
         fcntl: (args) => {
           // eslint-disable-next-line fp/no-mutating-methods
           fcntlCalls.push(args);
-          return { errno: undefined, ret: args.cmd === F_GETFL ? existingFlags : 0n };
+          return { errno: undefined, ret: args.cmd === F_GETFL ? existingFileStatusFlags : existingFdFlags };
         }
       });
 
@@ -376,7 +379,9 @@ describe("sockets", () => {
       assert.equal(socket.status().type, "open");
       assert.deepEqual(fcntlCalls, [
         { fd: 9, cmd: F_GETFL, arg: 0n },
-        { fd: 9, cmd: F_SETFL, arg: existingFlags | O_NONBLOCK }
+        { fd: 9, cmd: F_SETFL, arg: existingFileStatusFlags | O_NONBLOCK },
+        { fd: 9, cmd: F_GETFD, arg: 0n },
+        { fd: 9, cmd: F_SETFD, arg: existingFdFlags | FD_CLOEXEC }
       ]);
     });
 

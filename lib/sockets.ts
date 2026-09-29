@@ -9,9 +9,13 @@ import {
   ENOTDIR,
   EPERM,
   EPROTOTYPE,
+  F_GETFD,
   F_GETFL,
+  F_SETFD,
   F_SETFL,
+  FD_CLOEXEC,
   O_NONBLOCK,
+  SOCK_CLOEXEC,
   SOCK_NONBLOCK,
   SOCK_STREAM
 } from "./constants.ts";
@@ -62,7 +66,7 @@ const createSocketsFactory = ({
   const createUnixSocketFd = () => {
     const { errno: socketErrno, socketFd } = syscallInterface.socket({
       domain: AF_UNIX,
-      type: SOCK_STREAM | SOCK_NONBLOCK,
+      type: SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
       protocol: BigInt(0)
     });
 
@@ -154,7 +158,7 @@ const createSocketsFactory = ({
   const streamSocketPair = (): TStreamSocketPairResult => {
     const { errno, fd1, fd2 } = syscallInterface.socketpair({
       domain: AF_UNIX,
-      type: SOCK_STREAM | SOCK_NONBLOCK,
+      type: SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
       protocol: BigInt(0)
     });
 
@@ -185,12 +189,20 @@ const createSocketsFactory = ({
     };
   };
 
-  const importConnectedSocket = ({ socketFd }: { socketFd: number }) => {
-    // the fd was opened elsewhere, so it has to be switched to non-blocking mode here - note that
-    // this also affects all other fds that share its open file description, e.g. the one it was dupped from
-    const { errno: getErrno, ret: fileStatusFlags } = syscallInterface.fcntl({
-      fd: socketFd,
-      cmd: F_GETFL,
+  const addFcntlFlags = ({
+    fd,
+    getCommand,
+    setCommand,
+    flags
+  }: {
+    fd: number,
+    getCommand: bigint,
+    setCommand: bigint,
+    flags: bigint
+  }) => {
+    const { errno: getErrno, ret: currentFlags } = syscallInterface.fcntl({
+      fd,
+      cmd: getCommand,
       arg: 0n
     });
 
@@ -199,14 +211,33 @@ const createSocketsFactory = ({
     }
 
     const { errno: setErrno } = syscallInterface.fcntl({
-      fd: socketFd,
-      cmd: F_SETFL,
-      arg: fileStatusFlags | O_NONBLOCK
+      fd,
+      cmd: setCommand,
+      arg: currentFlags | flags
     });
 
     if (setErrno !== undefined) {
       throw Error(`fcntl syscall failed with errno ${setErrno}`);
     }
+  };
+
+  const importConnectedSocket = ({ socketFd }: { socketFd: number }) => {
+    // the fd was opened elsewhere, so it has to be switched to non-blocking mode here - note that
+    // this also affects all other fds that share its open file description, e.g. the one it was dupped from
+    addFcntlFlags({
+      fd: socketFd,
+      getCommand: F_GETFL,
+      setCommand: F_SETFL,
+      flags: O_NONBLOCK
+    });
+
+    // close-on-exec is a flag of this fd only
+    addFcntlFlags({
+      fd: socketFd,
+      getCommand: F_GETFD,
+      setCommand: F_SETFD,
+      flags: FD_CLOEXEC
+    });
 
     return createSocketWrapper({
       syscallInterface,

@@ -7,7 +7,10 @@ import {
   ECONNREFUSED,
   ECONNRESET,
   EPIPE,
+  F_DUPFD_CLOEXEC,
+  MSG_CMSG_CLOEXEC,
   MSG_CTRUNC,
+  MSG_PEEK,
   MSG_TRUNC,
   SOL_SOCKET,
   SCM_RIGHTS
@@ -51,9 +54,6 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
     },
     socketpair: () => {
       return { errno: undefined, fd1: 10, fd2: 11 };
-    },
-    dup: () => {
-      return { errno: undefined, fd: 20 };
     },
     ...overrides
   };
@@ -133,9 +133,9 @@ describe("socket-wrapper", () => {
             recordCall({ name: "close" });
             return { errno: undefined };
           },
-          dup: () => {
-            recordCall({ name: "dup" });
-            return { errno: undefined, fd: 42 };
+          fcntl: () => {
+            recordCall({ name: "fcntl" });
+            return { errno: undefined, ret: 42n };
           }
         }),
         socketFd: 5,
@@ -225,11 +225,14 @@ describe("socket-wrapper", () => {
       }, { message: /invalid state/ });
     });
 
-    it("should dup in open state", () => {
+    it("should dup the socket fd with close-on-exec in open state", () => {
+      let fcntlArgs: { fd: number, cmd: bigint, arg: bigint } | undefined;
+
       const wrapper = createSocketWrapper({
         syscallInterface: createMockSyscallInterface({
-          dup: () => {
-            return { errno: undefined, fd: 99 };
+          fcntl: (args) => {
+            fcntlArgs = args;
+            return { errno: undefined, ret: 99n };
           }
         }),
         socketFd: 5,
@@ -238,13 +241,14 @@ describe("socket-wrapper", () => {
 
       const result = wrapper.dup();
       assert.equal(result.socketFd, 99);
+      assert.deepEqual(fcntlArgs, { fd: 5, cmd: F_DUPFD_CLOEXEC, arg: 0n });
     });
 
-    it("should throw on dup syscall failure in open state", () => {
+    it("should throw when dupping fails in open state", () => {
       const wrapper = createSocketWrapper({
         syscallInterface: createMockSyscallInterface({
-          dup: () => {
-            return { errno: 9, fd: undefined };
+          fcntl: () => {
+            return { errno: 9, ret: undefined };
           }
         }),
         socketFd: 5,
@@ -255,7 +259,7 @@ describe("socket-wrapper", () => {
         () => {
           wrapper.dup();
         },
-        { message: /dup syscall failed with errno 9/ }
+        { message: /fcntl syscall failed with errno 9/ }
       );
     });
   });
@@ -625,7 +629,7 @@ describe("socket-wrapper", () => {
       );
     });
 
-    it("should pass peek flag as MSG_PEEK", () => {
+    it("should pass peek flag as MSG_PEEK, along with MSG_CMSG_CLOEXEC", () => {
       let capturedFlags = 0n;
 
       const syscallInterface = createMockSyscallInterface({
@@ -647,11 +651,10 @@ describe("socket-wrapper", () => {
         flags: { peek: true }
       });
 
-      // MSG_PEEK
-      assert.equal(capturedFlags, 0x02n);
+      assert.equal(capturedFlags, MSG_PEEK | MSG_CMSG_CLOEXEC);
     });
 
-    it("should not set MSG_PEEK when peek is not set", () => {
+    it("should only pass MSG_CMSG_CLOEXEC when peek is not set", () => {
       let capturedFlags = 99n;
 
       const syscallInterface = createMockSyscallInterface({
@@ -673,7 +676,7 @@ describe("socket-wrapper", () => {
         flags: {}
       });
 
-      assert.equal(capturedFlags, 0n);
+      assert.equal(capturedFlags, MSG_CMSG_CLOEXEC);
     });
 
     it("should parse SCM_RIGHTS control messages from recvmsg", () => {

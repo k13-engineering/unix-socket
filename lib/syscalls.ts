@@ -3,7 +3,6 @@ import { syscall as kernelSyscall, syscallNumbers } from "syscall-napi";
 import { createControlMessageListAsBuffer, parsers, type TRawControlMessage } from "./abi.ts";
 import { pinBuffer } from "buffer2address";
 
-// eslint-disable-next-line max-statements
 const createSyscallInterface = ({
   syscall
 }: {
@@ -419,27 +418,6 @@ const createSyscallInterface = ({
     };
   };
 
-  const dup = ({ fd }: { fd: number }) => {
-    const { errno, ret } = syscall({
-      syscallNumber: syscallNumbers.dup,
-      args: [
-        BigInt(fd)
-      ]
-    });
-
-    if (errno !== undefined) {
-      return {
-        errno,
-        fd: undefined
-      };
-    }
-
-    return {
-      errno: undefined,
-      fd: Number(ret)
-    };
-  };
-
   return {
     socket,
     connect,
@@ -452,8 +430,7 @@ const createSyscallInterface = ({
     recvmsg,
     sendmsg,
     getsockopt,
-    socketpair,
-    dup
+    socketpair
   };
 };
 

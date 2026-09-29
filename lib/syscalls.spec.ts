@@ -52,7 +52,6 @@ describe("syscalls", () => {
       assert.equal(typeof iface.sendmsg, "function");
       assert.equal(typeof iface.getsockopt, "function");
       assert.equal(typeof iface.socketpair, "function");
-      assert.equal(typeof iface.dup, "function");
     });
   });
 
@@ -534,38 +533,6 @@ describe("syscalls", () => {
       assert.equal(result.errno, 24);
       assert.equal(result.fd1, undefined);
       assert.equal(result.fd2, undefined);
-    });
-  });
-
-  describe("dup", () => {
-
-    it("should call syscall with dup number and return fd", () => {
-      const { syscall, calls, setNextResult } = createMockSyscall();
-      setNextResult({ ret: 7n });
-      const iface = createSyscallInterface({ syscall });
-
-      const result = iface.dup({
-        fd: 3
-      });
-
-      assert.equal(result.errno, undefined);
-      assert.equal(result.fd, 7);
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0].syscallNumber, syscallNumbers.dup);
-      assert.deepEqual(calls[0].args, [3n]);
-    });
-
-    it("should return errno when dup fails", () => {
-      const { syscall, setNextResult } = createMockSyscall();
-      setNextResult({ errno: 9 });
-      const iface = createSyscallInterface({ syscall });
-
-      const result = iface.dup({
-        fd: 3
-      });
-
-      assert.equal(result.errno, 9);
-      assert.equal(result.fd, undefined);
     });
   });
 

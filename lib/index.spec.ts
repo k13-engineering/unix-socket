@@ -18,6 +18,7 @@ import {
   ELOOP,
   ENOENT,
   ENOTDIR,
+  F_SETFD,
   F_SETFL
 } from "./constants.ts";
 
@@ -47,14 +48,47 @@ const createConnectedClientAndServer = ({ socketPath }: { socketPath: string }) 
   return { server, client, clientSocket };
 };
 
-const isNonBlocking = ({ fd }: { fd: number }) => {
+const flagsOf = ({ fd }: { fd: number }) => {
   const flagsLine = fs.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8").split("\n").find((line) => {
     return line.startsWith("flags:");
   });
   assert.ok(flagsLine);
 
-  // O_NONBLOCK, the flags are printed in octal
-  return (parseInt(flagsLine.split(/\s+/)[1], 8) & 0o4000) !== 0;
+  // the flags are printed in octal
+  return parseInt(flagsLine.split(/\s+/)[1], 8);
+};
+
+const isNonBlocking = ({ fd }: { fd: number }) => {
+  // O_NONBLOCK
+  return (flagsOf({ fd }) & 0o4000) !== 0;
+};
+
+const isCloseOnExec = ({ fd }: { fd: number }) => {
+  // O_CLOEXEC, which the flags show for fds with FD_CLOEXEC set
+  return (flagsOf({ fd }) & 0o2000000) !== 0;
+};
+
+const listOpenFds = () => {
+  return fs.readdirSync("/proc/self/fd").map(Number).filter((fd) => {
+    // skip the fd that was used to read the directory and is closed by now
+    try {
+      fs.fstatSync(fd);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+};
+
+const fdsOpenedBy = <T>({ fn }: { fn: () => T }) => {
+  const fdsBefore = listOpenFds();
+  const result = fn();
+
+  const openedFds = listOpenFds().filter((fd) => {
+    return !fdsBefore.includes(fd);
+  });
+
+  return { result, openedFds };
 };
 
 const connectUntilConnectError = ({ socketPath, maxAttempts }: { socketPath: string, maxAttempts: number }) => {
@@ -246,6 +280,151 @@ describe("index", () => {
 
     socket1.close();
     socket2.close();
+  });
+
+  describe("close-on-exec", () => {
+
+    it("should open server, client and accepted sockets with close-on-exec", () => {
+      withTemporarySocketPath({
+        fn: ({ socketPath }) => {
+          const { result: server, openedFds: serverFds } = fdsOpenedBy({
+            fn: () => {
+              return createUnixStreamSocketServer({ socketPath }).server;
+            }
+          });
+          assert.ok(server);
+          assert.equal(server.listen({ backlog: 1 }).error, undefined);
+
+          const { result: client, openedFds: clientFds } = fdsOpenedBy({
+            fn: () => {
+              return createUnixStreamSocketClient({ socketPath });
+            }
+          });
+
+          const { result: clientSocket, openedFds: acceptedFds } = fdsOpenedBy({
+            fn: () => {
+              return server.accept().clientSocket;
+            }
+          });
+          assert.ok(clientSocket);
+
+          const closeOnExec = [...serverFds, ...clientFds, ...acceptedFds].map((fd) => {
+            return isCloseOnExec({ fd });
+          });
+
+          client.close();
+          clientSocket.close();
+          server.close();
+
+          assert.deepEqual(closeOnExec, [true, true, true]);
+        }
+      });
+    });
+
+    it("should open socket pairs with close-on-exec", () => {
+      const { result: pair, openedFds } = fdsOpenedBy({
+        fn: () => {
+          return streamSocketPair();
+        }
+      });
+
+      const closeOnExec = openedFds.map((fd) => {
+        return isCloseOnExec({ fd });
+      });
+
+      pair.socket1?.close();
+      pair.socket2?.close();
+
+      assert.deepEqual(closeOnExec, [true, true]);
+    });
+
+    it("should dup sockets with close-on-exec", () => {
+      withTemporarySocketPath({
+        fn: ({ socketPath }) => {
+          const { server } = createUnixStreamSocketServer({ socketPath });
+          assert.ok(server);
+          const { socket1, socket2 } = streamSocketPair();
+          assert.ok(socket1);
+          assert.ok(socket2);
+
+          const duppedFds = [server.dup().serverSocketFd, socket1.dup().socketFd];
+
+          const closeOnExec = duppedFds.map((fd) => {
+            return isCloseOnExec({ fd });
+          });
+
+          duppedFds.forEach((fd) => {
+            fs.closeSync(fd);
+          });
+          socket1.close();
+          socket2.close();
+          server.close();
+
+          assert.deepEqual(closeOnExec, [true, true]);
+        }
+      });
+    });
+
+    it("should receive fds with close-on-exec", () => {
+      const { socket1, socket2 } = streamSocketPair();
+      assert.ok(socket1);
+      assert.ok(socket2);
+
+      const sentFd = fs.openSync(fileURLToPath(new URL("./index.ts", import.meta.url)), "r");
+
+      socket1.sendmsg({
+        data: new Uint8Array([1]),
+        controlMessages: [{ level: "SOL_SOCKET", type: "SCM_RIGHTS", fd: sentFd }],
+        flags: {}
+      });
+
+      const { controlMessages } = socket2.recvmsg({
+        count: 16,
+        maxControlMessageBytes: 256,
+        flags: {}
+      });
+
+      const receivedFds = controlMessages.map(({ fd }) => {
+        return fd;
+      });
+
+      const closeOnExec = receivedFds.map((fd) => {
+        return isCloseOnExec({ fd });
+      });
+
+      [sentFd, ...receivedFds].forEach((fd) => {
+        fs.closeSync(fd);
+      });
+      socket1.close();
+      socket2.close();
+
+      assert.deepEqual(closeOnExec, [true]);
+    });
+
+    it("should set close-on-exec on an imported socket fd", () => {
+      const { socket1, socket2 } = streamSocketPair();
+      assert.ok(socket1);
+      assert.ok(socket2);
+
+      const { socketFd } = socket1.dup();
+
+      // clear close-on-exec, as a socket created elsewhere may not have it
+      const { errno: fcntlErrno } = syscall({
+        syscallNumber: syscallNumbers.fcntl,
+        args: [BigInt(socketFd), F_SETFD, 0n]
+      });
+      assert.equal(fcntlErrno, undefined);
+      assert.equal(isCloseOnExec({ fd: socketFd }), false);
+
+      const importedSocket = importConnectedSocket({ socketFd });
+      const closeOnExecAfterImport = isCloseOnExec({ fd: socketFd });
+
+      importedSocket.close();
+      socket1.close();
+      socket2.close();
+
+      assert.equal(closeOnExecAfterImport, true);
+    });
   });
 
   it("should report remote-reset when the peer closes with unread data", () => {
