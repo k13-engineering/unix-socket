@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createSocketsFactory } from "./sockets.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
-import { ENOENT } from "./constants.ts";
+import {
+  AF_UNIX,
+  ENOENT,
+  F_GETFL,
+  F_SETFL,
+  O_NONBLOCK,
+  SOCK_NONBLOCK,
+  SOCK_STREAM
+} from "./constants.ts";
 import { createUnixSocketAddressAsBuffer } from "./abi.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
@@ -73,22 +81,10 @@ describe("sockets", () => {
         socket: ({ domain, type, protocol }) => {
           // eslint-disable-next-line fp/no-mutating-methods
           calls.push("socket");
-          // AF_UNIX
-          assert.equal(domain, 1n);
-          // SOCK_STREAM
-          assert.equal(type, 1n);
+          assert.equal(domain, AF_UNIX);
+          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK);
           assert.equal(protocol, 0n);
           return { errno: undefined, socketFd: 7 };
-        },
-        fcntl: ({ fd, cmd, arg }) => {
-          // eslint-disable-next-line fp/no-mutating-methods
-          calls.push("fcntl");
-          assert.equal(fd, 7);
-          // F_SETFL
-          assert.equal(cmd, 4n);
-          // O_NONBLOCK
-          assert.equal(arg, 2048n);
-          return { errno: undefined, ret: 0n };
         },
         connect: ({ socketFd }) => {
           // eslint-disable-next-line fp/no-mutating-methods
@@ -102,7 +98,7 @@ describe("sockets", () => {
       const client = factory.createUnixStreamSocketClient({ socketPath: "/tmp/test.sock" });
 
       assert.ok(client);
-      assert.deepEqual(calls, ["socket", "fcntl", "connect"]);
+      assert.deepEqual(calls, ["socket", "connect"]);
     });
 
     it("should return a socket with status, recvmsg, sendmsg, close methods", () => {
@@ -132,23 +128,6 @@ describe("sockets", () => {
           factory.createUnixStreamSocketClient({ socketPath: "/tmp/test.sock" });
         },
         { message: /socket syscall failed/ }
-      );
-    });
-
-    it("should throw when fcntl syscall fails", () => {
-      const syscallInterface = createMockSyscallInterface({
-        fcntl: () => {
-          return { errno: 9, ret: undefined };
-        }
-      });
-
-      const factory = createSocketsFactory({ syscallInterface });
-
-      assert.throws(
-        () => {
-          factory.createUnixStreamSocketClient({ socketPath: "/tmp/test.sock" });
-        },
-        { message: /fcntl syscall failed/ }
       );
     });
 
@@ -218,12 +197,6 @@ describe("sockets", () => {
           calls.push("socket");
           return { errno: undefined, socketFd: 7 };
         },
-        fcntl: ({ fd }) => {
-          // eslint-disable-next-line fp/no-mutating-methods
-          calls.push("fcntl");
-          assert.equal(fd, 7);
-          return { errno: undefined, ret: 0n };
-        },
         bind: ({ socketFd, socketAddressAsBuffer }) => {
           // eslint-disable-next-line fp/no-mutating-methods
           calls.push("bind");
@@ -243,11 +216,11 @@ describe("sockets", () => {
       const { error, server } = factory.createUnixStreamSocketServer({ socketPath: "/tmp/server.sock" });
 
       assert.equal(error, undefined);
-      assert.deepEqual(calls, ["socket", "fcntl", "bind"]);
+      assert.deepEqual(calls, ["socket", "bind"]);
 
       // the returned server operates on the bound socket
       server!.listen({ backlog: 1 });
-      assert.deepEqual(calls, ["socket", "fcntl", "bind", "listen"]);
+      assert.deepEqual(calls, ["socket", "bind", "listen"]);
     });
 
     it("should return an error when bind fails", () => {
@@ -270,10 +243,8 @@ describe("sockets", () => {
     it("should create a socket pair and return two sockets", () => {
       const syscallInterface = createMockSyscallInterface({
         socketpair: ({ domain, type, protocol }) => {
-          // AF_UNIX
-          assert.equal(domain, 1n);
-          // SOCK_STREAM
-          assert.equal(type, 1n);
+          assert.equal(domain, AF_UNIX);
+          assert.equal(type, SOCK_STREAM | SOCK_NONBLOCK);
           assert.equal(protocol, 0n);
           return { errno: undefined, fd1: 10, fd2: 11 };
         }
@@ -329,6 +300,64 @@ describe("sockets", () => {
 
       assert.equal(socket1!.status().type, "open");
       assert.equal(socket2!.status().type, "open");
+    });
+  });
+
+  describe("importConnectedSocket", () => {
+
+    it("should switch the fd to non-blocking mode, keeping its other file status flags", () => {
+      const fcntlCalls: { fd: number, cmd: bigint, arg: bigint }[] = [];
+      // O_APPEND, standing in for any flag the fd already has
+      const existingFlags = 1024n;
+
+      const syscallInterface = createMockSyscallInterface({
+        fcntl: (args) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          fcntlCalls.push(args);
+          return { errno: undefined, ret: args.cmd === F_GETFL ? existingFlags : 0n };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+      const socket = factory.importConnectedSocket({ socketFd: 9 });
+
+      assert.equal(socket.status().type, "open");
+      assert.deepEqual(fcntlCalls, [
+        { fd: 9, cmd: F_GETFL, arg: 0n },
+        { fd: 9, cmd: F_SETFL, arg: existingFlags | O_NONBLOCK }
+      ]);
+    });
+
+    it("should throw when reading the file status flags fails", () => {
+      const syscallInterface = createMockSyscallInterface({
+        fcntl: () => {
+          return { errno: 9, ret: undefined };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+
+      assert.throws(() => {
+        factory.importConnectedSocket({ socketFd: 9 });
+      }, { message: /fcntl syscall failed with errno 9/ });
+    });
+
+    it("should throw when setting the file status flags fails", () => {
+      const syscallInterface = createMockSyscallInterface({
+        fcntl: ({ cmd }) => {
+          if (cmd === F_GETFL) {
+            return { errno: undefined, ret: 0n };
+          }
+
+          return { errno: 22, ret: undefined };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+
+      assert.throws(() => {
+        factory.importConnectedSocket({ socketFd: 9 });
+      }, { message: /fcntl syscall failed with errno 22/ });
     });
   });
 });

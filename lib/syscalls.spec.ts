@@ -193,20 +193,21 @@ describe("syscalls", () => {
 
   describe("accept", () => {
 
-    it("should call syscall with accept number and return socketFd", () => {
+    it("should call syscall with accept4 number and flags and return socketFd", () => {
       const { syscall, calls, setNextResult } = createMockSyscall();
       setNextResult({ ret: 8n });
       const iface = createSyscallInterface({ syscall });
 
       const result = iface.accept({
-        socketFd: 3
+        socketFd: 3,
+        flags: 2048n
       });
 
       assert.equal(result.errno, undefined);
       assert.equal(result.socketFd, 8);
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].syscallNumber, syscallNumbers.accept);
-      assert.deepEqual(calls[0].args, [3n, 0n, 0n]);
+      assert.equal(calls[0].syscallNumber, syscallNumbers.accept4);
+      assert.deepEqual(calls[0].args, [3n, 0n, 0n, 2048n]);
     });
 
     it("should return errno when accept fails", () => {
@@ -215,7 +216,8 @@ describe("syscalls", () => {
       const iface = createSyscallInterface({ syscall });
 
       const result = iface.accept({
-        socketFd: 3
+        socketFd: 3,
+        flags: 0n
       });
 
       assert.equal(result.errno, 11);

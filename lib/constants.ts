@@ -1,11 +1,13 @@
 const AF_UNIX = BigInt(1);
 const SOCK_STREAM = BigInt(1);
+const SOCK_NONBLOCK = BigInt(2048);
 
 const EINPROGRESS = 115;
 const EAGAIN = 11;
 const EPIPE = 32;
 const ENOENT = 2;
 
+const F_GETFL = BigInt(3);
 const F_SETFL = BigInt(4);
 const O_NONBLOCK = BigInt(2048);
 
@@ -21,12 +23,14 @@ const MSG_TRUNC = BigInt(0x20);
 export {
   AF_UNIX,
   SOCK_STREAM,
+  SOCK_NONBLOCK,
 
   EINPROGRESS,
   EAGAIN,
   EPIPE,
   ENOENT,
 
+  F_GETFL,
   F_SETFL,
   O_NONBLOCK,
 

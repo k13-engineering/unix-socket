@@ -95,13 +95,14 @@ const createSyscallInterface = ({
     };
   };
 
-  const accept = ({ socketFd }: { socketFd: number }) => {
+  const accept = ({ socketFd, flags }: { socketFd: number, flags: bigint }) => {
     const { errno, ret } = syscall({
-      syscallNumber: syscallNumbers.accept,
+      syscallNumber: syscallNumbers.accept4,
       args: [
         BigInt(socketFd),
         0n,
-        0n
+        0n,
+        flags
       ]
     });
 

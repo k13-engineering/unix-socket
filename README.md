@@ -2,6 +2,10 @@
 
 Synchronous, non-blocking Unix domain stream sockets for Node.js on Linux, including file descriptor passing (`SCM_RIGHTS`).
 
+## Non-blocking sockets
+
+All sockets are in non-blocking mode, so no call ever waits. `importConnectedSocket` switches the fd it is given to non-blocking mode. This also affects every other fd that shares its open file description, for example the fd it was dupped from.
+
 ## Error handling: look before you leap
 
 This library follows the LBYL ("look before you leap") style. Every socket is in one state, which `status()` reports. Check the state before calling an operation, because each operation is only allowed in some states:

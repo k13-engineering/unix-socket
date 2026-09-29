@@ -1,3 +1,4 @@
+import { SOCK_NONBLOCK } from "./constants.ts";
 import { createSocketWrapper, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 
@@ -53,8 +54,10 @@ const createUnixStreamSocketServerWrapper = ({
       throw Error("already closed");
     }
 
+    // accepted sockets don't inherit O_NONBLOCK from the server socket
     const { errno, socketFd } = syscallInterface.accept({
-      socketFd: serverSocketFd
+      socketFd: serverSocketFd,
+      flags: SOCK_NONBLOCK
     });
 
     if (errno !== undefined) {

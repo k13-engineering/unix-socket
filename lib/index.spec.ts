@@ -10,6 +10,8 @@ import {
   importConnectedSocket,
   streamSocketPair
 } from "./index.ts";
+import { syscall, syscallNumbers } from "syscall-napi";
+import { F_SETFL } from "./constants.ts";
 
 const withTemporarySocketPath = ({ fn }: { fn: (args: { socketPath: string }) => void }) => {
   const socketDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "unix-socket-"));
@@ -35,6 +37,16 @@ const createConnectedClientAndServer = ({ socketPath }: { socketPath: string }) 
   assert.ok(clientSocket);
 
   return { server, client, clientSocket };
+};
+
+const isNonBlocking = ({ fd }: { fd: number }) => {
+  const flagsLine = fs.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8").split("\n").find((line) => {
+    return line.startsWith("flags:");
+  });
+  assert.ok(flagsLine);
+
+  // O_NONBLOCK, the flags are printed in octal
+  return (parseInt(flagsLine.split(/\s+/)[1], 8) & 0o4000) !== 0;
 };
 
 describe("index", () => {
@@ -70,6 +82,59 @@ describe("index", () => {
         server.close();
       }
     });
+  });
+
+  it("should create clients, accepted sockets and socket pairs in non-blocking mode", () => {
+    withTemporarySocketPath({
+      fn: ({ socketPath }) => {
+        const { server, client, clientSocket } = createConnectedClientAndServer({ socketPath });
+        const { socket1, socket2 } = streamSocketPair();
+        assert.ok(socket1);
+        assert.ok(socket2);
+
+        const sockets = [client, clientSocket, socket1, socket2];
+
+        const nonBlocking = sockets.map((socket) => {
+          // a dupped fd shares the file status flags of the original one
+          const { socketFd } = socket.dup();
+          const result = isNonBlocking({ fd: socketFd });
+          fs.closeSync(socketFd);
+          return result;
+        });
+
+        sockets.forEach((socket) => {
+          socket.close();
+        });
+        server.close();
+
+        assert.deepEqual(nonBlocking, [true, true, true, true]);
+      }
+    });
+  });
+
+  it("should switch an imported socket fd to non-blocking mode", () => {
+    const { socket1, socket2 } = streamSocketPair();
+    assert.ok(socket1);
+    assert.ok(socket2);
+
+    const { socketFd } = socket1.dup();
+
+    // make the fd blocking, as a socket created elsewhere typically is
+    const { errno: fcntlErrno } = syscall({
+      syscallNumber: syscallNumbers.fcntl,
+      args: [BigInt(socketFd), F_SETFL, 0n]
+    });
+    assert.equal(fcntlErrno, undefined);
+    assert.equal(isNonBlocking({ fd: socketFd }), false);
+
+    const importedSocket = importConnectedSocket({ socketFd });
+    const nonBlockingAfterImport = isNonBlocking({ fd: socketFd });
+
+    importedSocket.close();
+    socket1.close();
+    socket2.close();
+
+    assert.equal(nonBlockingAfterImport, true);
   });
 
   it("should report a connect error when the socket path does not exist", () => {

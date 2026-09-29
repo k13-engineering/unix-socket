@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createUnixStreamSocketServerWrapper } from "./server-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
+import { SOCK_NONBLOCK } from "./constants.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
   return {
@@ -134,8 +135,8 @@ describe("server-wrapper", () => {
       assert.ok(result.clientSocket !== undefined);
     });
 
-    it("should pass the server socket fd to accept syscall", () => {
-      let acceptArgs: { socketFd: number } | undefined;
+    it("should accept on the server socket fd with the accepted socket being non-blocking", () => {
+      let acceptArgs: { socketFd: number, flags: bigint } | undefined;
 
       const server = createUnixStreamSocketServerWrapper({
         syscallInterface: createMockSyscallInterface({
@@ -149,7 +150,7 @@ describe("server-wrapper", () => {
 
       server.accept();
 
-      assert.deepEqual(acceptArgs, { socketFd: 5 });
+      assert.deepEqual(acceptArgs, { socketFd: 5, flags: SOCK_NONBLOCK });
     });
 
     it("should return undefined clientSocket on EAGAIN", () => {

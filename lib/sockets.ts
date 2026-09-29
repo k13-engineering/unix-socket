@@ -2,8 +2,10 @@ import { createUnixSocketAddressAsBuffer } from "./abi.ts";
 import {
   AF_UNIX,
   ENOENT,
+  F_GETFL,
   F_SETFL,
   O_NONBLOCK,
+  SOCK_NONBLOCK,
   SOCK_STREAM
 } from "./constants.ts";
 import {
@@ -40,22 +42,12 @@ const createSocketsFactory = ({
   const createUnixSocketFd = () => {
     const { errno: socketErrno, socketFd } = syscallInterface.socket({
       domain: AF_UNIX,
-      type: SOCK_STREAM,
+      type: SOCK_STREAM | SOCK_NONBLOCK,
       protocol: BigInt(0)
     });
 
     if (socketErrno !== undefined) {
       throw Error(`socket syscall failed with errno ${socketErrno}`);
-    }
-
-    const { errno: fcntlErrno } = syscallInterface.fcntl({
-      fd: socketFd,
-      cmd: F_SETFL,
-      arg: O_NONBLOCK
-    });
-
-    if (fcntlErrno !== undefined) {
-      throw Error(`fcntl syscall failed with errno ${fcntlErrno}`);
     }
 
     return socketFd;
@@ -125,7 +117,7 @@ const createSocketsFactory = ({
   const streamSocketPair = (): TStreamSocketPairResult => {
     const { errno, fd1, fd2 } = syscallInterface.socketpair({
       domain: AF_UNIX,
-      type: SOCK_STREAM,
+      type: SOCK_STREAM | SOCK_NONBLOCK,
       protocol: BigInt(0)
     });
 
@@ -156,9 +148,40 @@ const createSocketsFactory = ({
     };
   };
 
+  const importConnectedSocket = ({ socketFd }: { socketFd: number }) => {
+    // the fd was opened elsewhere, so it has to be switched to non-blocking mode here - note that
+    // this also affects all other fds that share its open file description, e.g. the one it was dupped from
+    const { errno: getErrno, ret: fileStatusFlags } = syscallInterface.fcntl({
+      fd: socketFd,
+      cmd: F_GETFL,
+      arg: 0n
+    });
+
+    if (getErrno !== undefined) {
+      throw Error(`fcntl syscall failed with errno ${getErrno}`);
+    }
+
+    const { errno: setErrno } = syscallInterface.fcntl({
+      fd: socketFd,
+      cmd: F_SETFL,
+      arg: fileStatusFlags | O_NONBLOCK
+    });
+
+    if (setErrno !== undefined) {
+      throw Error(`fcntl syscall failed with errno ${setErrno}`);
+    }
+
+    return createSocketWrapper({
+      syscallInterface,
+      socketFd,
+      connectError: undefined
+    });
+  };
+
   return {
     createUnixStreamSocketClient,
     createUnixStreamSocketServer,
+    importConnectedSocket,
     streamSocketPair
   };
 };
