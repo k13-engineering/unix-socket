@@ -75,7 +75,6 @@ describe("index", () => {
   it("should report a connect error when the socket path does not exist", () => {
     const client = createUnixStreamSocketClient({ socketPath: "/nonexistent/unix-socket.sock" });
     assert.equal(client.status().type, "connect-error");
-    client.close();
   });
 
   it("should release the socket fd on close", () => {

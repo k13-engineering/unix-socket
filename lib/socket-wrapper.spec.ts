@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "mocha";
-import { createSocketWrapper, type TControlMessage } from "./socket-wrapper.ts";
+import { createSocketWrapper, type TControlMessage, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 import {
   EAGAIN,
@@ -75,76 +75,63 @@ describe("socket-wrapper", () => {
       }
     });
 
-    it("should return empty data on recvmsg in connect-error state", () => {
-      const wrapper = createSocketWrapper({
-        syscallInterface: createMockSyscallInterface(),
-        socketFd: 5,
-        connectError: Error("connection refused")
-      });
+    [
+      {
+        operation: "dup",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.dup();
+        }
+      },
+      {
+        operation: "sendmsg",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.sendmsg({ data: new Uint8Array([1, 2, 3]), controlMessages: [], flags: {} });
+        }
+      },
+      {
+        operation: "recvmsg",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.recvmsg({ count: 1024, maxControlMessageBytes: 256, flags: {} });
+        }
+      },
+      {
+        operation: "close",
+        call: (wrapper: TUnixSocket) => {
+          wrapper.close();
+        }
+      }
+    ].forEach(({ operation, call }) => {
+      it(`should throw invalid state on ${operation} in connect-error state`, () => {
+        const wrapper = createSocketWrapper({
+          syscallInterface: createMockSyscallInterface(),
+          socketFd: 5,
+          connectError: Error("connection refused")
+        });
 
-      const result = wrapper.recvmsg({
-        count: 1024,
-        maxControlMessageBytes: 256,
-        flags: {}
-      });
+        assert.throws(() => {
+          call(wrapper);
+        }, { message: /invalid state/ });
 
-      assert.equal(result.data.length, 0);
-      assert.deepEqual(result.controlMessages, []);
-      assert.deepEqual(result.flags, { trunc: false, ctrunc: false });
+        assert.equal(wrapper.status().type, "connect-error");
+      });
     });
 
-    it("should return 0 bytes sent on sendmsg in connect-error state", () => {
-      const wrapper = createSocketWrapper({
-        syscallInterface: createMockSyscallInterface(),
-        socketFd: 5,
-        connectError: Error("connection refused")
-      });
+    it("should not touch the already closed socket fd in connect-error state", () => {
+      const calledSyscalls: string[] = [];
 
-      const result = wrapper.sendmsg({
-        data: new Uint8Array([1, 2, 3]),
-        controlMessages: [],
-        flags: {}
-      });
-
-      assert.equal(result.bytesSent, 0);
-    });
-
-    it("should transition to closed state on close", () => {
-      const wrapper = createSocketWrapper({
-        syscallInterface: createMockSyscallInterface(),
-        socketFd: 5,
-        connectError: Error("connection refused")
-      });
-
-      wrapper.close();
-
-      const status = wrapper.status();
-      assert.equal(status.type, "closed");
-    });
-
-    it("should not close the socket fd again on close in connect-error state", () => {
-      let closeCalls = 0;
+      const recordCall = ({ name }: { name: string }) => {
+        // eslint-disable-next-line fp/no-mutating-methods
+        calledSyscalls.push(name);
+      };
 
       const wrapper = createSocketWrapper({
         syscallInterface: createMockSyscallInterface({
           close: () => {
-            closeCalls += 1;
+            recordCall({ name: "close" });
             return { errno: undefined };
-          }
-        }),
-        socketFd: 5,
-        connectError: Error("connection refused")
-      });
-
-      wrapper.close();
-
-      assert.equal(closeCalls, 0);
-    });
-
-    it("should dup in connect-error state", () => {
-      const wrapper = createSocketWrapper({
-        syscallInterface: createMockSyscallInterface({
+          },
           dup: () => {
+            recordCall({ name: "dup" });
             return { errno: undefined, fd: 42 };
           }
         }),
@@ -152,8 +139,14 @@ describe("socket-wrapper", () => {
         connectError: Error("connection refused")
       });
 
-      const result = wrapper.dup();
-      assert.equal(result.socketFd, 42);
+      assert.throws(() => {
+        wrapper.close();
+      });
+      assert.throws(() => {
+        wrapper.dup();
+      });
+
+      assert.deepEqual(calledSyscalls, []);
     });
   });
 

@@ -162,23 +162,21 @@ const createSocketWrapper = ({
       };
     };
 
+    // the socket fd has already been closed when connecting failed,
+    // so there is nothing left to operate on - not even to close
     const dup: E["dup"] = () => {
-      return commonDup();
+      return raiseInvalidState();
     };
 
     const sendmsg: E["sendmsg"] = () => {
-      return { bytesSent: 0 };
+      return raiseInvalidState();
     };
     const recvmsg: E["recvmsg"] = () => {
-      return { data: new Uint8Array(0), controlMessages: [], flags: noReceivedFlags };
+      return raiseInvalidState();
     };
 
     const close: E["close"] = () => {
-      // the socket fd has already been closed when connecting failed
-      return {
-        closeErrno: undefined,
-        [transitionTo]: transitionToClosedState()
-      };
+      return raiseInvalidState();
     };
 
     return {
