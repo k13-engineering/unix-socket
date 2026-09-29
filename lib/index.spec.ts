@@ -78,6 +78,25 @@ describe("index", () => {
     client.close();
   });
 
+  it("should release the socket fd on close", () => {
+    const { errno, socket1, socket2 } = streamSocketPair();
+    if (errno !== undefined) {
+      throw Error(`socketpair syscall failed with errno ${errno}`);
+    }
+
+    const { socketFd } = socket1.dup();
+    const importedSocket = importConnectedSocket({ socketFd });
+
+    importedSocket.close();
+
+    assert.throws(() => {
+      fs.fstatSync(socketFd);
+    }, { code: "EBADF" });
+
+    socket1.close();
+    socket2.close();
+  });
+
   it("should import a connected socket fd", () => {
     const { errno, socket1, socket2 } = streamSocketPair();
     if (errno !== undefined) {

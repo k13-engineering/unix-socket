@@ -73,7 +73,7 @@ type TConnectionInputEvents = {
     controlMessages: TControlMessage[],
     flags: Record<string, never>
   }) => { bytesSent: number },
-  close: () => Record<string, unknown>
+  close: () => { closeErrno: number | undefined }
 };
 
 type TUnixSocket = {
@@ -159,7 +159,9 @@ const createSocketWrapper = ({
     };
 
     const close: E["close"] = () => {
+      // the socket fd has already been closed when connecting failed
       return {
+        closeErrno: undefined,
         [transitionTo]: transitionToClosedState()
       };
     };
@@ -321,7 +323,13 @@ const createSocketWrapper = ({
     };
 
     const close: E["close"] = () => {
+      const { errno: closeErrno } = syscallInterface.close({
+        fd: socketFd
+      });
+
+      // Linux releases the fd even if close fails, so the socket is closed in any case
       return {
+        closeErrno,
         [transitionTo]: transitionToClosedState()
       };
     };
@@ -371,7 +379,11 @@ const createSocketWrapper = ({
   }) as TSocketStateMachineNamespace["stateMachine"];
 
   const close = () => {
-    stateMachine.close();
+    const { closeErrno } = stateMachine.close();
+
+    if (closeErrno !== undefined) {
+      throw Error(`close syscall failed with errno ${closeErrno}`);
+    }
   };
 
   return {

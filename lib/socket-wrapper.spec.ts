@@ -114,6 +114,25 @@ describe("socket-wrapper", () => {
       assert.equal(status.type, "closed");
     });
 
+    it("should not close the socket fd again on close in connect-error state", () => {
+      let closeCalls = 0;
+
+      const wrapper = createSocketWrapper({
+        syscallInterface: createMockSyscallInterface({
+          close: () => {
+            closeCalls += 1;
+            return { errno: undefined };
+          }
+        }),
+        socketFd: 5,
+        connectError: Error("connection refused")
+      });
+
+      wrapper.close();
+
+      assert.equal(closeCalls, 0);
+    });
+
     it("should dup in connect-error state", () => {
       const wrapper = createSocketWrapper({
         syscallInterface: createMockSyscallInterface({
@@ -158,6 +177,48 @@ describe("socket-wrapper", () => {
 
       const status = wrapper.status();
       assert.equal(status.type, "closed");
+    });
+
+    it("should close the socket fd on close", () => {
+      const closedFds: number[] = [];
+
+      const wrapper = createSocketWrapper({
+        syscallInterface: createMockSyscallInterface({
+          close: ({ fd }) => {
+            // eslint-disable-next-line fp/no-mutating-methods
+            closedFds.push(fd);
+            return { errno: undefined };
+          }
+        }),
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      wrapper.close();
+
+      assert.deepEqual(closedFds, [5]);
+    });
+
+    it("should throw on close syscall failure, but still transition to closed state", () => {
+      const wrapper = createSocketWrapper({
+        syscallInterface: createMockSyscallInterface({
+          close: () => {
+            return { errno: 5 };
+          }
+        }),
+        socketFd: 5,
+        connectError: undefined
+      });
+
+      assert.throws(() => {
+        wrapper.close();
+      }, { message: /close syscall failed with errno 5/ });
+
+      // the fd is released even if close fails, so it must not be closed a second time
+      assert.equal(wrapper.status().type, "closed");
+      assert.throws(() => {
+        wrapper.close();
+      }, { message: /invalid state/ });
     });
 
     it("should dup in open state", () => {
