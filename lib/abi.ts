@@ -1,15 +1,29 @@
-import { define, types } from "ya-struct";
+import { define, types, type TAbi } from "ya-struct";
 import { AF_UNIX } from "./constants.ts";
 import type { TFieldType } from "ya-struct/dist/lib/types/index.js";
+import os from "node:os";
 import process from "node:process";
 
 const { ascii, pointer, UInt16, UInt64 } = types;
 
-const hostAbi = {
-  endianness: "little",
-  compiler: "gcc",
-  dataModel: "LP64"
-} as const;
+const dataModelByArch: Partial<Record<NodeJS.Architecture, TAbi["dataModel"]>> = {
+  x64: "LP64",
+  arm64: "LP64",
+  arm: "ILP32"
+};
+
+const determineHostAbi = (): TAbi => {
+  const dataModel = dataModelByArch[process.arch];
+  if (dataModel === undefined) {
+    throw Error(`architecture ${process.arch} not implemented yet`);
+  }
+
+  return {
+    endianness: os.endianness() === "LE" ? "little" : "big",
+    compiler: "gcc",
+    dataModel
+  };
+};
 
 const sockaddr_un = define({
   definition: {
@@ -23,12 +37,13 @@ const sockaddr_un = define({
   }
 });
 
-if (process.arch !== "x64" && process.arch !== "arm64") {
-  throw Error("not implemented yet");
-}
-
+// unsigned long on 64-bit architectures, unsigned int on arm, which has the same size there
 // eslint-disable-next-line no-underscore-dangle
-const __kernel_size_t: TFieldType = UInt64;
+const __kernel_size_t: TFieldType = {
+  type: "c-type",
+  cType: "unsigned long",
+  fixedAbi: {}
+};
 
 const iovec = define({
   definition: {
@@ -157,21 +172,29 @@ const socketpair_sv = define({
   }
 });
 
-const parsers = {
-  sockaddr_un: sockaddr_un.parser({ abi: hostAbi }),
-  iovec: iovec.parser({ abi: hostAbi }),
-  msghdr: msghdr.parser({ abi: hostAbi }),
-  cmsghdr: cmsghdr.parser({ abi: hostAbi }),
-  sockopt_length: sockopt_length.parser({ abi: hostAbi }),
-  sockopt_error: sockopt_error.parser({ abi: hostAbi }),
-  socketpair_sv: socketpair_sv.parser({ abi: hostAbi })
-};
+// used to determine sizeof(long), which control messages are aligned to
+const c_long = define({
+  definition: {
+    type: "struct",
+    fields: [
+      { name: "value", definition: { type: "c-type", cType: "long", fixedAbi: {} } }
+    ],
+    packed: false,
+    fixedAbi: {}
+  }
+});
 
-const CMSG_ALIGN = ({ length }: { length: number }) => {
-  // TODO: make the alignment value arch-dependent
-  const alignment = 8;
-  return Math.ceil(length / alignment) * alignment;
-};
+// the payload of a SCM_RIGHTS control message is an array of these
+const scm_rights_fd = define({
+  definition: {
+    type: "struct",
+    fields: [
+      { name: "fd", definition: { type: "c-type", cType: "int", fixedAbi: {} } }
+    ],
+    packed: false,
+    fixedAbi: {}
+  }
+});
 
 type TRawControlMessage = {
   level: bigint,
@@ -195,86 +218,163 @@ const concatBuffers = ({ parts }: { parts: Uint8Array[] }) => {
   return result;
 };
 
-const createControlMessageAsBuffer = ({ controlMessage }: { controlMessage: TRawControlMessage }) => {
+const createAbi =({ abi }: { abi: TAbi }) => {
 
-  const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
-  const alignedDataLength = CMSG_ALIGN({ length: controlMessage.data.length });
+  const parsers = {
+    sockaddr_un: sockaddr_un.parser({ abi }),
+    iovec: iovec.parser({ abi }),
+    msghdr: msghdr.parser({ abi }),
+    cmsghdr: cmsghdr.parser({ abi }),
+    sockopt_length: sockopt_length.parser({ abi }),
+    sockopt_error: sockopt_error.parser({ abi }),
+    socketpair_sv: socketpair_sv.parser({ abi }),
+    scm_rights_fd: scm_rights_fd.parser({ abi })
+  };
 
-  const totalLength = alignedHeaderSize + alignedDataLength;
+  const longSize = c_long.parser({ abi }).size;
 
-  const cmsg = new Uint8Array(totalLength);
-  const header = parsers.cmsghdr.format({
-    value: {
-      cmsg_len: BigInt(alignedHeaderSize + controlMessage.data.length),
-      cmsg_level: controlMessage.level,
-      cmsg_type: controlMessage.type
-    }
-  });
+  const CMSG_ALIGN = ({ length }: { length: number }) => {
+    return Math.ceil(length / longSize) * longSize;
+  };
 
-  let offset = 0;
-  cmsg.set(header, offset);
-  offset += alignedHeaderSize;
-  cmsg.set(controlMessage.data, offset);
-  // eslint-disable-next-line no-useless-assignment
-  offset += alignedDataLength;
+  const createControlMessageAsBuffer = ({ controlMessage }: { controlMessage: TRawControlMessage }) => {
 
-  return cmsg;
-};
+    const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
+    const alignedDataLength = CMSG_ALIGN({ length: controlMessage.data.length });
 
-const parseControlMessagesFromBuffer = ({ buffer }: { buffer: Uint8Array }): TRawControlMessage[] => {
-  const messages: TRawControlMessage[] = [];
-  const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
+    const totalLength = alignedHeaderSize + alignedDataLength;
 
-  let offset = 0;
-  while (offset + alignedHeaderSize <= buffer.length) {
-    const header = parsers.cmsghdr.parse({ data: buffer.subarray(offset) });
-    const cmsgLen = Number(header.cmsg_len);
-
-    if (cmsgLen < alignedHeaderSize) {
-      break;
-    }
-
-    const dataOffset = offset + alignedHeaderSize;
-    const dataLength = cmsgLen - alignedHeaderSize;
-    const data = buffer.slice(dataOffset, dataOffset + dataLength);
-
-    // eslint-disable-next-line fp/no-mutating-methods -- performance
-    messages.push({
-      level: header.cmsg_level,
-      type: header.cmsg_type,
-      data
+    const cmsg = new Uint8Array(totalLength);
+    const header = parsers.cmsghdr.format({
+      value: {
+        cmsg_len: BigInt(alignedHeaderSize + controlMessage.data.length),
+        cmsg_level: controlMessage.level,
+        cmsg_type: controlMessage.type
+      }
     });
 
-    offset += CMSG_ALIGN({ length: cmsgLen });
-  }
+    let offset = 0;
+    cmsg.set(header, offset);
+    offset += alignedHeaderSize;
+    cmsg.set(controlMessage.data, offset);
+    // eslint-disable-next-line no-useless-assignment
+    offset += alignedDataLength;
 
-  return messages;
-};
+    return cmsg;
+  };
 
-const createControlMessageListAsBuffer = ({ controlMessages }: { controlMessages: TRawControlMessage[] }) => {
-  const parts = controlMessages.map((controlMessage) => {
-    return createControlMessageAsBuffer({ controlMessage });
-  });
+  const parseControlMessagesFromBuffer = ({ buffer }: { buffer: Uint8Array }): TRawControlMessage[] => {
+    const messages: TRawControlMessage[] = [];
+    const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
 
-  return concatBuffers({ parts });
-};
+    let offset = 0;
+    while (offset + alignedHeaderSize <= buffer.length) {
+      const header = parsers.cmsghdr.parse({ data: buffer.subarray(offset) });
+      const cmsgLen = Number(header.cmsg_len);
 
-const createUnixSocketAddressAsBuffer = ({ socketPath }: { socketPath: string }) => {
-  return parsers.sockaddr_un.format({
-    value: {
-      sun_family: AF_UNIX,
-      sun_path: socketPath
+      if (cmsgLen < alignedHeaderSize) {
+        break;
+      }
+
+      const dataOffset = offset + alignedHeaderSize;
+      const dataLength = cmsgLen - alignedHeaderSize;
+      const data = buffer.slice(dataOffset, dataOffset + dataLength);
+
+      // eslint-disable-next-line fp/no-mutating-methods -- performance
+      messages.push({
+        level: header.cmsg_level,
+        type: header.cmsg_type,
+        data
+      });
+
+      offset += CMSG_ALIGN({ length: cmsgLen });
     }
-  });
+
+    return messages;
+  };
+
+  const createControlMessageListAsBuffer = ({ controlMessages }: { controlMessages: TRawControlMessage[] }) => {
+    const parts = controlMessages.map((controlMessage) => {
+      return createControlMessageAsBuffer({ controlMessage });
+    });
+
+    return concatBuffers({ parts });
+  };
+
+  const createUnixSocketAddressAsBuffer = ({ socketPath }: { socketPath: string }) => {
+    return parsers.sockaddr_un.format({
+      value: {
+        sun_family: AF_UNIX,
+        sun_path: socketPath
+      }
+    });
+  };
+
+  const createScmRightsPayload = ({ fds }: { fds: number[] }) => {
+    const parts = fds.map((fd) => {
+      return parsers.scm_rights_fd.format({
+        value: {
+          fd: BigInt(fd)
+        }
+      });
+    });
+
+    return concatBuffers({ parts });
+  };
+
+  const parseScmRightsPayload = ({ data }: { data: Uint8Array }) => {
+    const fdSize = parsers.scm_rights_fd.size;
+    const fdCount = Math.floor(data.length / fdSize);
+
+    return [...Array(fdCount).keys()].map((index) => {
+      const { fd } = parsers.scm_rights_fd.parse({
+        data: data.subarray(index * fdSize, (index + 1) * fdSize)
+      });
+
+      return Number(fd);
+    });
+  };
+
+  return {
+    parsers,
+
+    CMSG_ALIGN,
+
+    createUnixSocketAddressAsBuffer,
+    createControlMessageAsBuffer,
+    createControlMessageListAsBuffer,
+    parseControlMessagesFromBuffer,
+    createScmRightsPayload,
+    parseScmRightsPayload
+  };
 };
 
-export {
+const {
   parsers,
+
+  CMSG_ALIGN,
 
   createUnixSocketAddressAsBuffer,
   createControlMessageAsBuffer,
   createControlMessageListAsBuffer,
   parseControlMessagesFromBuffer,
+  createScmRightsPayload,
+  parseScmRightsPayload
+} = createAbi({ abi: determineHostAbi() });
+
+export {
+  createAbi,
+
+  parsers,
+
+  CMSG_ALIGN,
+
+  createUnixSocketAddressAsBuffer,
+  createControlMessageAsBuffer,
+  createControlMessageListAsBuffer,
+  parseControlMessagesFromBuffer,
+  createScmRightsPayload,
+  parseScmRightsPayload
 };
 
 export type {

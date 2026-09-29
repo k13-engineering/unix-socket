@@ -1,4 +1,9 @@
-import { parseControlMessagesFromBuffer, type TRawControlMessage } from "./abi.ts";
+import {
+  createScmRightsPayload,
+  parseControlMessagesFromBuffer,
+  parseScmRightsPayload,
+  type TRawControlMessage
+} from "./abi.ts";
 import {
   EAGAIN,
   EPIPE,
@@ -209,14 +214,10 @@ const createSocketWrapper = ({
       const rawControlMessages: TRawControlMessage[] = controlMessages.map((controlMessage) => {
 
         if (controlMessage.level === "SOL_SOCKET" && controlMessage.type === "SCM_RIGHTS") {
-          const controlMessagePayload = new Uint8Array(4);
-          // TODO: size and endianness for different architectures
-          new DataView(controlMessagePayload.buffer).setInt32(0, controlMessage.fd, true);
-
           return {
             level: SOL_SOCKET,
             type: SCM_RIGHTS,
-            data: controlMessagePayload
+            data: createScmRightsPayload({ fds: [controlMessage.fd] })
           };
         }
 
@@ -304,20 +305,13 @@ const createSocketWrapper = ({
         if (rawControlMessage.level === SOL_SOCKET && rawControlMessage.type === SCM_RIGHTS) {
           // the kernel merges all fds of a sendmsg call into a single SCM_RIGHTS message,
           // so it may carry more than one fd
-          // TODO: size and endianness for different architectures
-          const fdSize = 4;
-          const fdCount = Math.floor(rawControlMessage.data.length / fdSize);
-          const dataView = new DataView(
-            rawControlMessage.data.buffer,
-            rawControlMessage.data.byteOffset,
-            rawControlMessage.data.byteLength
-          );
+          const fds = parseScmRightsPayload({ data: rawControlMessage.data });
 
-          return [...Array(fdCount).keys()].map((index): TControlMessage => {
+          return fds.map((fd): TControlMessage => {
             return {
               level: "SOL_SOCKET",
               type: "SCM_RIGHTS",
-              fd: dataView.getInt32(index * fdSize, true)
+              fd
             };
           });
         }

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import {
+  createAbi,
   parsers,
+  CMSG_ALIGN,
   createUnixSocketAddressAsBuffer,
   createControlMessageAsBuffer,
   createControlMessageListAsBuffer,
   parseControlMessagesFromBuffer,
   type TRawControlMessage
 } from "./abi.ts";
+import { SCM_RIGHTS, SOL_SOCKET } from "./constants.ts";
 import { describe, it } from "mocha";
 
 describe("abi", () => {
@@ -20,6 +23,7 @@ describe("abi", () => {
       assert.ok(parsers.sockopt_length);
       assert.ok(parsers.sockopt_error);
       assert.ok(parsers.socketpair_sv);
+      assert.ok(parsers.scm_rights_fd);
     });
 
     it("should have positive sizes for all parsers", () => {
@@ -92,8 +96,7 @@ describe("abi", () => {
       };
       const buffer = createControlMessageAsBuffer({ controlMessage });
 
-      // The alignment is 8 bytes, so header should be aligned to 8
-      const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+      const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
       const extractedData = buffer.slice(alignedHeaderSize, alignedHeaderSize + data.length);
       assert.deepEqual(extractedData, data);
     });
@@ -108,7 +111,7 @@ describe("abi", () => {
       const buffer = createControlMessageAsBuffer({ controlMessage });
       const header = parsers.cmsghdr.parse({ data: buffer });
 
-      const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+      const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
       assert.equal(header.cmsg_len, BigInt(alignedHeaderSize + data.length));
     });
 
@@ -122,7 +125,7 @@ describe("abi", () => {
       assert.ok(buffer instanceof Uint8Array);
 
       const header = parsers.cmsghdr.parse({ data: buffer });
-      const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+      const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
       assert.equal(header.cmsg_len, BigInt(alignedHeaderSize));
     });
 
@@ -134,7 +137,7 @@ describe("abi", () => {
         data: new Uint8Array([1, 2, 3])
       };
       const buffer = createControlMessageAsBuffer({ controlMessage });
-      assert.equal(buffer.length % 8, 0, "total length should be aligned to 8 bytes");
+      assert.equal(buffer.length, CMSG_ALIGN({ length: buffer.length }), "total length should be aligned");
     });
   });
 
@@ -189,7 +192,7 @@ describe("abi", () => {
 
     it("should stop parsing when cmsg_len is smaller than aligned header size", () => {
       // Create a buffer with a zeroed-out header (cmsg_len = 0)
-      const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+      const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
       const buffer = new Uint8Array(alignedHeaderSize + 16);
       // cmsg_len is 0, which is < alignedHeaderSize, so it should stop
       const messages = parseControlMessagesFromBuffer({ buffer });
@@ -300,6 +303,129 @@ describe("abi", () => {
         assert.equal(parsed.length, 1, `failed for dataLen=${dataLen}`);
         assert.deepEqual(parsed[0].data, data, `data mismatch for dataLen=${dataLen}`);
       }
+    });
+  });
+
+  describe("createAbi", () => {
+
+    // reference values produced by gcc and glibc on the respective architecture
+    const lp64LittleEndian = {
+      abi: { endianness: "little", compiler: "gcc", dataModel: "LP64" },
+      expected: {
+        cmsghdrSize: 16,
+        iovecSize: 16,
+        sockaddrUnSize: 110,
+        msghdrOffsets: {
+          msg_name: 0,
+          msg_namelen: 8,
+          msg_iov: 16,
+          msg_iovlen: 24,
+          msg_control: 32,
+          msg_controllen: 40,
+          msg_flags: 48
+        },
+        scmRightsControlMessageOfFds77And78: [
+          24, 0, 0, 0, 0, 0, 0, 0,
+          1, 0, 0, 0,
+          1, 0, 0, 0,
+          77, 0, 0, 0,
+          78, 0, 0, 0
+        ]
+      }
+    } as const;
+
+    const architectures = [
+      { name: "amd64", ...lp64LittleEndian },
+      { name: "arm64", ...lp64LittleEndian },
+      {
+        name: "arm32",
+        abi: { endianness: "little", compiler: "gcc", dataModel: "ILP32" },
+        expected: {
+          cmsghdrSize: 12,
+          iovecSize: 8,
+          sockaddrUnSize: 110,
+          msghdrOffsets: {
+            msg_name: 0,
+            msg_namelen: 4,
+            msg_iov: 8,
+            msg_iovlen: 12,
+            msg_control: 16,
+            msg_controllen: 20,
+            msg_flags: 24
+          },
+          scmRightsControlMessageOfFds77And78: [
+            20, 0, 0, 0,
+            1, 0, 0, 0,
+            1, 0, 0, 0,
+            77, 0, 0, 0,
+            78, 0, 0, 0
+          ]
+        }
+      }
+    ] as const;
+
+    architectures.forEach(({ name, abi, expected }) => {
+
+      describe(name, () => {
+
+        const archAbi = createAbi({ abi });
+
+        it("should size structs like gcc", () => {
+          assert.equal(archAbi.parsers.cmsghdr.size, expected.cmsghdrSize);
+          assert.equal(archAbi.parsers.iovec.size, expected.iovecSize);
+          assert.equal(archAbi.parsers.sockaddr_un.size, expected.sockaddrUnSize);
+        });
+
+        it("should lay out msghdr fields like gcc", () => {
+          const fieldNames = Object.keys(expected.msghdrOffsets) as (keyof typeof expected.msghdrOffsets)[];
+
+          const value = Object.fromEntries(fieldNames.map((fieldName) => {
+            // mark each field with a distinct value, so its offset can be located
+            return [fieldName, BigInt(fieldNames.indexOf(fieldName) + 1)];
+          })) as Record<keyof typeof expected.msghdrOffsets, bigint>;
+
+          const msghdr = archAbi.parsers.msghdr.format({ value });
+
+          fieldNames.forEach((fieldName) => {
+            assert.equal(
+              msghdr[expected.msghdrOffsets[fieldName]],
+              fieldNames.indexOf(fieldName) + 1,
+              `unexpected offset of ${fieldName}`
+            );
+          });
+        });
+
+        it("should encode a SCM_RIGHTS control message like gcc", () => {
+          const buffer = archAbi.createControlMessageAsBuffer({
+            controlMessage: {
+              level: SOL_SOCKET,
+              type: SCM_RIGHTS,
+              data: archAbi.createScmRightsPayload({ fds: [77, 78] })
+            }
+          });
+
+          assert.deepEqual(buffer, Uint8Array.from(expected.scmRightsControlMessageOfFds77And78));
+        });
+
+        it("should decode a SCM_RIGHTS control message produced by gcc", () => {
+          const messages = archAbi.parseControlMessagesFromBuffer({
+            buffer: Uint8Array.from(expected.scmRightsControlMessageOfFds77And78)
+          });
+
+          assert.equal(messages.length, 1);
+          assert.equal(messages[0].level, SOL_SOCKET);
+          assert.equal(messages[0].type, SCM_RIGHTS);
+          assert.deepEqual(archAbi.parseScmRightsPayload({ data: messages[0].data }), [77, 78]);
+        });
+      });
+    });
+
+    it("should encode fds with the endianness of the ABI", () => {
+      const bigEndianAbi = createAbi({ abi: { endianness: "big", compiler: "gcc", dataModel: "LP64" } });
+      const payload = bigEndianAbi.createScmRightsPayload({ fds: [77, 0x01020304] });
+
+      assert.deepEqual(payload, new Uint8Array([0, 0, 0, 77, 1, 2, 3, 4]));
+      assert.deepEqual(bigEndianAbi.parseScmRightsPayload({ data: payload }), [77, 0x01020304]);
     });
   });
 });

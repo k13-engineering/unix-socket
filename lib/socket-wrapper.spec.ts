@@ -3,7 +3,7 @@ import { describe, it } from "mocha";
 import { createSocketWrapper, type TControlMessage } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 import { EAGAIN, EPIPE, SOL_SOCKET, SCM_RIGHTS } from "./constants.ts";
-import { parsers } from "./abi.ts";
+import { CMSG_ALIGN, createScmRightsPayload, parsers } from "./abi.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
   return {
@@ -354,9 +354,7 @@ describe("socket-wrapper", () => {
       const raw = capturedControlMessages[0] as { level: bigint, type: bigint, data: Uint8Array };
       assert.equal(raw.level, SOL_SOCKET);
       assert.equal(raw.type, SCM_RIGHTS);
-      // fd 42 encoded as little-endian int32
-      const view = new DataView(raw.data.buffer);
-      assert.equal(view.getInt32(0, true), 42);
+      assert.deepEqual(raw.data, createScmRightsPayload({ fds: [42] }));
     });
 
     it("should throw on unsupported control message type", () => {
@@ -539,14 +537,13 @@ describe("socket-wrapper", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ controlMessageBuffer }) => {
           // Write a SCM_RIGHTS control message into the control message buffer
-          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+          const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
 
-          const fdPayload = new Uint8Array(4);
-          new DataView(fdPayload.buffer).setInt32(0, 77, true);
+          const fdPayload = createScmRightsPayload({ fds: [77] });
 
           const header = parsers.cmsghdr.format({
             value: {
-              cmsg_len: BigInt(alignedHeaderSize + 4),
+              cmsg_len: BigInt(alignedHeaderSize + fdPayload.length),
               cmsg_level: SOL_SOCKET,
               cmsg_type: SCM_RIGHTS
             }
@@ -581,13 +578,9 @@ describe("socket-wrapper", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ controlMessageBuffer }) => {
           // the kernel merges all fds of a sendmsg call into a single SCM_RIGHTS message
-          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+          const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
 
-          const fdPayload = new Uint8Array(12);
-          const fdPayloadView = new DataView(fdPayload.buffer);
-          fdPayloadView.setInt32(0, 77, true);
-          fdPayloadView.setInt32(4, 78, true);
-          fdPayloadView.setInt32(8, 79, true);
+          const fdPayload = createScmRightsPayload({ fds: [77, 78, 79] });
 
           const header = parsers.cmsghdr.format({
             value: {
@@ -626,13 +619,10 @@ describe("socket-wrapper", () => {
     it("should return fds of multiple SCM_RIGHTS control messages in order", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ controlMessageBuffer }) => {
-          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+          const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
 
           const writeControlMessage = ({ offset, fds }: { offset: number, fds: number[] }) => {
-            const fdPayload = new Uint8Array(fds.length * 4);
-            [...fds.keys()].forEach((index) => {
-              new DataView(fdPayload.buffer).setInt32(index * 4, fds[index], true);
-            });
+            const fdPayload = createScmRightsPayload({ fds });
 
             const header = parsers.cmsghdr.format({
               value: {
@@ -645,7 +635,7 @@ describe("socket-wrapper", () => {
             controlMessageBuffer.set(header, offset);
             controlMessageBuffer.set(fdPayload, offset + alignedHeaderSize);
 
-            return offset + alignedHeaderSize + Math.ceil(fdPayload.length / 8) * 8;
+            return offset + alignedHeaderSize + CMSG_ALIGN({ length: fdPayload.length });
           };
 
           const nextOffset = writeControlMessage({ offset: 0, fds: [77, 78] });
@@ -677,7 +667,7 @@ describe("socket-wrapper", () => {
     it("should throw on unsupported received control message", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ controlMessageBuffer }) => {
-          const alignedHeaderSize = Math.ceil(parsers.cmsghdr.size / 8) * 8;
+          const alignedHeaderSize = CMSG_ALIGN({ length: parsers.cmsghdr.size });
 
           const header = parsers.cmsghdr.format({
             value: {
