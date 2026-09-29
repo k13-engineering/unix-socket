@@ -128,6 +128,14 @@ const createSocketsFactory = ({
     });
 
     if (bindErrno !== undefined) {
+      const { errno: closeErrno } = syscallInterface.close({
+        fd: socketFd
+      });
+
+      if (closeErrno !== undefined) {
+        throw Error(`close syscall failed with errno ${closeErrno}`);
+      }
+
       return {
         error: Error(`bind syscall failed with errno ${bindErrno}`),
         server: undefined

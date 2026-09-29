@@ -250,10 +250,17 @@ describe("sockets", () => {
       assert.deepEqual(calls, ["socket", "bind", "listen"]);
     });
 
-    it("should return an error when bind fails", () => {
+    it("should return an error and close the socket fd when bind fails", () => {
+      const closedFds: number[] = [];
+
       const syscallInterface = createMockSyscallInterface({
         bind: () => {
           return { errno: 98 };
+        },
+        close: ({ fd }) => {
+          // eslint-disable-next-line fp/no-mutating-methods
+          closedFds.push(fd);
+          return { errno: undefined };
         }
       });
 
@@ -262,6 +269,24 @@ describe("sockets", () => {
 
       assert.equal(server, undefined);
       assert.match(error!.message, /bind syscall failed with errno 98/);
+      assert.deepEqual(closedFds, [10]);
+    });
+
+    it("should throw when closing the socket after a failed bind fails", () => {
+      const syscallInterface = createMockSyscallInterface({
+        bind: () => {
+          return { errno: 98 };
+        },
+        close: () => {
+          return { errno: 9 };
+        }
+      });
+
+      const factory = createSocketsFactory({ syscallInterface });
+
+      assert.throws(() => {
+        factory.createUnixStreamSocketServer({ socketPath: "/tmp/server.sock" });
+      }, { message: /close syscall failed with errno 9/ });
     });
   });
 

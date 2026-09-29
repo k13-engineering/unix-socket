@@ -276,6 +276,22 @@ describe("index", () => {
     assert.equal(socket1.status().type, "closed");
   });
 
+  it("should not leave the socket fd open when binding the server fails", () => {
+    withTemporarySocketPath({
+      fn: ({ socketPath }) => {
+        // binding to a path that is already taken fails with EADDRINUSE
+        fs.writeFileSync(socketPath, "");
+
+        const fdsBefore = fs.readdirSync("/proc/self/fd");
+        const { error } = createUnixStreamSocketServer({ socketPath });
+        const fdsAfter = fs.readdirSync("/proc/self/fd");
+
+        assert.match(error!.message, /bind syscall failed with errno 98/);
+        assert.deepEqual(fdsAfter, fdsBefore);
+      }
+    });
+  });
+
   it("should import a connected socket fd", () => {
     const { errno, socket1, socket2 } = streamSocketPair();
     if (errno !== undefined) {
