@@ -32,7 +32,7 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
       return { errno: undefined, ret: 0n };
     },
     recvmsg: () => {
-      return { errno: undefined, controlMessages: [], bytesReceived: 0 };
+      return { errno: undefined, controlMessages: [], bytesReceived: 0, msgFlags: 0n };
     },
     sendmsg: () => {
       return { errno: undefined, bytesSent: 0 };

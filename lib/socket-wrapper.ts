@@ -7,7 +7,9 @@ import {
 import {
   EAGAIN,
   EPIPE,
+  MSG_CTRUNC,
   MSG_PEEK,
+  MSG_TRUNC,
   SCM_RIGHTS,
   SOL_SOCKET
 } from "./constants.ts";
@@ -55,6 +57,18 @@ type TControlMessage = {
   fd: number
 };
 
+type TReceivedFlags = {
+  // the data did not fit into the provided buffer (MSG_TRUNC)
+  trunc: boolean,
+  // the control messages did not fit into maxControlMessageBytes and were cut off (MSG_CTRUNC)
+  ctrunc: boolean
+};
+
+const noReceivedFlags: TReceivedFlags = {
+  trunc: false,
+  ctrunc: false
+};
+
 type TConnectionInputEvents = {
   status: () => TUnixSocketStatus,
   dup: () => { socketFd: number },
@@ -66,7 +80,8 @@ type TConnectionInputEvents = {
     }
   }) => {
     data: Uint8Array,
-    controlMessages: TControlMessage[]
+    controlMessages: TControlMessage[],
+    flags: TReceivedFlags
   },
   sendmsg: (args: {
     data: Uint8Array,
@@ -155,7 +170,7 @@ const createSocketWrapper = ({
       return { bytesSent: 0 };
     };
     const recvmsg: E["recvmsg"] = () => {
-      return { data: new Uint8Array(0), controlMessages: [] };
+      return { data: new Uint8Array(0), controlMessages: [], flags: noReceivedFlags };
     };
 
     const close: E["close"] = () => {
@@ -270,7 +285,7 @@ const createSocketWrapper = ({
         rawFlags |= MSG_PEEK;
       }
 
-      const { errno, bytesReceived } = syscallInterface.recvmsg({
+      const { errno, bytesReceived, msgFlags } = syscallInterface.recvmsg({
         socketFd,
         dataBuffers: [buffer],
         controlMessageBuffer,
@@ -282,7 +297,8 @@ const createSocketWrapper = ({
         if (errno === EAGAIN) {
           return {
             data: new Uint8Array(0),
-            controlMessages: []
+            controlMessages: [],
+            flags: noReceivedFlags
           };
         }
 
@@ -318,7 +334,11 @@ const createSocketWrapper = ({
 
       return {
         data: buffer.subarray(0, bytesReceived),
-        controlMessages
+        controlMessages,
+        flags: {
+          trunc: (msgFlags & MSG_TRUNC) !== 0n,
+          ctrunc: (msgFlags & MSG_CTRUNC) !== 0n
+        }
       };
     };
 

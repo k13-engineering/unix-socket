@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createSocketWrapper, type TControlMessage } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
-import { EAGAIN, EPIPE, SOL_SOCKET, SCM_RIGHTS } from "./constants.ts";
+import {
+  EAGAIN,
+  EPIPE,
+  MSG_CTRUNC,
+  MSG_TRUNC,
+  SOL_SOCKET,
+  SCM_RIGHTS
+} from "./constants.ts";
 import { CMSG_ALIGN, createScmRightsPayload, parsers } from "./abi.ts";
 
 const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSyscallInterface => {
@@ -32,7 +39,7 @@ const createMockSyscallInterface = (overrides?: Partial<TSyscallInterface>): TSy
       return { errno: undefined, ret: 0n };
     },
     recvmsg: () => {
-      return { errno: undefined, controlMessages: [], bytesReceived: 0 };
+      return { errno: undefined, controlMessages: [], bytesReceived: 0, msgFlags: 0n };
     },
     sendmsg: () => {
       return { errno: undefined, bytesSent: 0 };
@@ -83,6 +90,7 @@ describe("socket-wrapper", () => {
 
       assert.equal(result.data.length, 0);
       assert.deepEqual(result.controlMessages, []);
+      assert.deepEqual(result.flags, { trunc: false, ctrunc: false });
     });
 
     it("should return 0 bytes sent on sendmsg in connect-error state", () => {
@@ -447,7 +455,7 @@ describe("socket-wrapper", () => {
         recvmsg: ({ dataBuffers }) => {
           // Simulate writing data into the buffer
           dataBuffers[0].set([10, 20, 30]);
-          return { errno: undefined, controlMessages: [], bytesReceived: 3 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 3, msgFlags: 0n };
         }
       });
 
@@ -466,12 +474,41 @@ describe("socket-wrapper", () => {
       assert.equal(result.data.length, 3);
       assert.deepEqual(Array.from(result.data), [10, 20, 30]);
       assert.deepEqual(result.controlMessages, []);
+      assert.deepEqual(result.flags, { trunc: false, ctrunc: false });
+    });
+
+    [
+      { msgFlags: MSG_TRUNC, expectedFlags: { trunc: true, ctrunc: false } },
+      { msgFlags: MSG_CTRUNC, expectedFlags: { trunc: false, ctrunc: true } },
+      { msgFlags: MSG_TRUNC | MSG_CTRUNC, expectedFlags: { trunc: true, ctrunc: true } }
+    ].forEach(({ msgFlags, expectedFlags }) => {
+      it(`should report msg_flags ${msgFlags} as ${JSON.stringify(expectedFlags)}`, () => {
+        const syscallInterface = createMockSyscallInterface({
+          recvmsg: () => {
+            return { errno: undefined, controlMessages: [], bytesReceived: 1, msgFlags };
+          }
+        });
+
+        const wrapper = createSocketWrapper({
+          syscallInterface,
+          socketFd: 5,
+          connectError: undefined
+        });
+
+        const result = wrapper.recvmsg({
+          count: 1024,
+          maxControlMessageBytes: 256,
+          flags: {}
+        });
+
+        assert.deepEqual(result.flags, expectedFlags);
+      });
     });
 
     it("should return empty data on EAGAIN", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: () => {
-          return { errno: EAGAIN, controlMessages: undefined, bytesReceived: undefined };
+          return { errno: EAGAIN, controlMessages: undefined, bytesReceived: undefined, msgFlags: undefined };
         }
       });
 
@@ -489,12 +526,13 @@ describe("socket-wrapper", () => {
 
       assert.equal(result.data.length, 0);
       assert.deepEqual(result.controlMessages, []);
+      assert.deepEqual(result.flags, { trunc: false, ctrunc: false });
     });
 
     it("should mark remote.writing as false when 0 bytes received", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: () => {
-          return { errno: undefined, controlMessages: [], bytesReceived: 0 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 0, msgFlags: 0n };
         }
       });
 
@@ -521,7 +559,7 @@ describe("socket-wrapper", () => {
     it("should throw on unexpected recvmsg errno", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: () => {
-          return { errno: 999, controlMessages: undefined, bytesReceived: undefined };
+          return { errno: 999, controlMessages: undefined, bytesReceived: undefined, msgFlags: undefined };
         }
       });
 
@@ -549,7 +587,7 @@ describe("socket-wrapper", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ flags }) => {
           capturedFlags = flags;
-          return { errno: undefined, controlMessages: [], bytesReceived: 0 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 0, msgFlags: 0n };
         }
       });
 
@@ -575,7 +613,7 @@ describe("socket-wrapper", () => {
       const syscallInterface = createMockSyscallInterface({
         recvmsg: ({ flags }) => {
           capturedFlags = flags;
-          return { errno: undefined, controlMessages: [], bytesReceived: 0 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 0, msgFlags: 0n };
         }
       });
 
@@ -613,7 +651,7 @@ describe("socket-wrapper", () => {
           controlMessageBuffer.set(header, 0);
           controlMessageBuffer.set(fdPayload, alignedHeaderSize);
 
-          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 1, msgFlags: 0n };
         }
       });
 
@@ -654,7 +692,7 @@ describe("socket-wrapper", () => {
           controlMessageBuffer.set(header, 0);
           controlMessageBuffer.set(fdPayload, alignedHeaderSize);
 
-          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 1, msgFlags: 0n };
         }
       });
 
@@ -702,7 +740,7 @@ describe("socket-wrapper", () => {
           const nextOffset = writeControlMessage({ offset: 0, fds: [77, 78] });
           writeControlMessage({ offset: nextOffset, fds: [79] });
 
-          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 1, msgFlags: 0n };
         }
       });
 
@@ -741,7 +779,7 @@ describe("socket-wrapper", () => {
           controlMessageBuffer.set(header, 0);
           controlMessageBuffer.set(new Uint8Array([0, 0, 0, 0]), alignedHeaderSize);
 
-          return { errno: undefined, controlMessages: [], bytesReceived: 1 };
+          return { errno: undefined, controlMessages: [], bytesReceived: 1, msgFlags: 0n };
         }
       });
 

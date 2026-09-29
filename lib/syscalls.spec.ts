@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "mocha";
 import { createSyscallInterface } from "./syscalls.ts";
 import { syscallNumbers } from "syscall-napi";
-import type { TRawControlMessage } from "./abi.ts";
+import { parsers, type TRawControlMessage } from "./abi.ts";
+import { MSG_CTRUNC, MSG_TRUNC } from "./constants.ts";
 
 type TSyscallArgs = {
   syscallNumber: bigint,
@@ -308,6 +309,7 @@ describe("syscalls", () => {
 
       assert.equal(result.errno, undefined);
       assert.equal(result.bytesReceived, 10);
+      assert.equal(result.msgFlags, 0n);
       assert.ok(Array.isArray(result.controlMessages));
       assert.equal(calls.length, 1);
       assert.equal(calls[0].syscallNumber, syscallNumbers.recvmsg);
@@ -330,6 +332,30 @@ describe("syscalls", () => {
       assert.equal(result.errno, 11);
       assert.equal(result.controlMessages, undefined);
       assert.equal(result.bytesReceived, undefined);
+      assert.equal(result.msgFlags, undefined);
+    });
+
+    it("should return the msg_flags written back by the kernel", () => {
+      const syscall = ({ args }: TSyscallArgs) => {
+        // the kernel reports flags by writing msg_flags into the passed msghdr
+        const msghdr = args[1] as Uint8Array;
+        const value = parsers.msghdr.parse({ data: msghdr });
+        msghdr.set(parsers.msghdr.format({ value: { ...value, msg_flags: MSG_TRUNC | MSG_CTRUNC } }));
+
+        return { errno: undefined, ret: 4n };
+      };
+
+      const iface = createSyscallInterface({ syscall });
+
+      const result = iface.recvmsg({
+        socketFd: 7,
+        dataBuffers: [new Uint8Array(4)],
+        controlMessageBuffer: new Uint8Array(0),
+        flags: 0n
+      });
+
+      assert.equal(result.errno, undefined);
+      assert.equal(result.msgFlags, MSG_TRUNC | MSG_CTRUNC);
     });
 
     it("should handle multiple data buffers", () => {

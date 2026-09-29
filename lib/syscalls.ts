@@ -257,14 +257,19 @@ const createSyscallInterface = ({
       return {
         errno,
         controlMessages: undefined,
-        bytesReceived: undefined
+        bytesReceived: undefined,
+        msgFlags: undefined
       };
     }
+
+    // the kernel reports flags like MSG_TRUNC and MSG_CTRUNC by writing back msg_flags
+    const { msg_flags: msgFlags } = parsers.msghdr.parse({ data: msghdr });
 
     return {
       errno: undefined,
       controlMessages: [] as TRawControlMessage[],
-      bytesReceived: Number(ret)
+      bytesReceived: Number(ret),
+      msgFlags
     };
   };
 

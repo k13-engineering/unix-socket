@@ -176,4 +176,33 @@ describe("index", () => {
     assert.deepEqual(data, new Uint8Array([1]));
     assert.deepEqual(receivedInodes, expectedInodes);
   });
+
+  it("should report ctrunc when passed fds do not fit into the control message buffer", () => {
+    const { errno, socket1, socket2 } = streamSocketPair();
+    if (errno !== undefined) {
+      throw Error(`socketpair syscall failed with errno ${errno}`);
+    }
+
+    const sentFd = fs.openSync(fileURLToPath(new URL("./index.ts", import.meta.url)), "r");
+
+    socket1.sendmsg({
+      data: new Uint8Array([1]),
+      controlMessages: [{ level: "SOL_SOCKET", type: "SCM_RIGHTS", fd: sentFd }],
+      flags: {}
+    });
+
+    const { data, controlMessages, flags } = socket2.recvmsg({
+      count: 16,
+      maxControlMessageBytes: 0,
+      flags: {}
+    });
+
+    fs.closeSync(sentFd);
+    socket1.close();
+    socket2.close();
+
+    assert.deepEqual(data, new Uint8Array([1]));
+    assert.deepEqual(controlMessages, []);
+    assert.deepEqual(flags, { trunc: false, ctrunc: true });
+  });
 });

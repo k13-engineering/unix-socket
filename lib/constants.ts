@@ -15,6 +15,8 @@ const SO_ERROR = BigInt(4);
 const SCM_RIGHTS = BigInt(0x01);
 
 const MSG_PEEK = BigInt(0x02);
+const MSG_CTRUNC = BigInt(0x08);
+const MSG_TRUNC = BigInt(0x20);
 
 export {
   AF_UNIX,
@@ -33,5 +35,7 @@ export {
 
   SCM_RIGHTS,
 
-  MSG_PEEK
+  MSG_PEEK,
+  MSG_CTRUNC,
+  MSG_TRUNC
 };
