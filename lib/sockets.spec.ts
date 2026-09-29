@@ -4,7 +4,14 @@ import { createSocketsFactory } from "./sockets.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
 import {
   AF_UNIX,
+  EACCES,
+  EAGAIN,
+  ECONNREFUSED,
+  ELOOP,
   ENOENT,
+  ENOTDIR,
+  EPERM,
+  EPROTOTYPE,
   F_GETFL,
   F_SETFL,
   O_NONBLOCK,
@@ -131,27 +138,47 @@ describe("sockets", () => {
       );
     });
 
-    it("should handle ENOENT connect error gracefully", () => {
-      const syscallInterface = createMockSyscallInterface({
-        connect: () => {
-          return { errno: ENOENT };
-        }
+    [
+      { name: "ENOENT", errno: ENOENT, message: "No such file or directory" },
+      { name: "ENOTDIR", errno: ENOTDIR, message: "Not a directory" },
+      { name: "ELOOP", errno: ELOOP, message: "Too many levels of symbolic links" },
+      { name: "EACCES", errno: EACCES, message: "Permission denied" },
+      { name: "EPERM", errno: EPERM, message: "Operation not permitted" },
+      { name: "ECONNREFUSED", errno: ECONNREFUSED, message: "Connection refused" },
+      { name: "EAGAIN", errno: EAGAIN, message: "Listen backlog of the server is full" },
+      { name: "EPROTOTYPE", errno: EPROTOTYPE, message: "Protocol wrong type for socket" }
+    ].forEach(({ name, errno, message }) => {
+      it(`should report ${name} from connect as connect-error state and close the socket fd`, () => {
+        const closedFds: number[] = [];
+
+        const syscallInterface = createMockSyscallInterface({
+          connect: () => {
+            return { errno };
+          },
+          close: ({ fd }) => {
+            // eslint-disable-next-line fp/no-mutating-methods
+            closedFds.push(fd);
+            return { errno: undefined };
+          }
+        });
+
+        const factory = createSocketsFactory({ syscallInterface });
+        const client = factory.createUnixStreamSocketClient({ socketPath: "/tmp/test.sock" });
+
+        assert.deepEqual(client.status(), {
+          type: "connect-error",
+          errno,
+          error: Error(`${message}: /tmp/test.sock`)
+        });
+        assert.deepEqual(closedFds, [10]);
       });
-
-      const factory = createSocketsFactory({ syscallInterface });
-      const client = factory.createUnixStreamSocketClient({ socketPath: "/tmp/missing.sock" });
-
-      const status = client.status();
-      assert.equal(status.type, "connect-error");
-      if (status.type === "connect-error") {
-        assert.ok(status.error.message.includes("/tmp/missing.sock"));
-      }
     });
 
-    it("should throw for non-ENOENT connect errors", () => {
+    it("should throw for connect errors that are not routine", () => {
       const syscallInterface = createMockSyscallInterface({
         connect: () => {
-          return { errno: 111 };
+          // EINVAL
+          return { errno: 22 };
         }
       });
 

@@ -25,8 +25,14 @@ import {
   type TSyscallInterface,
 } from "./syscalls.ts";
 
+type TConnectError = {
+  errno: number,
+  error: Error
+};
+
 type TUnixSocketStatus = {
   type: "connect-error",
+  errno: number,
   error: Error
 } | {
   type: "remote-reset",
@@ -118,7 +124,7 @@ const createSocketWrapper = ({
 }: {
   syscallInterface: TSyscallInterface,
   socketFd: number,
-  connectError: Error | undefined
+  connectError: TConnectError | undefined
 }): TUnixSocket => {
 
   // type E = TConnectionInputEvents;
@@ -153,12 +159,13 @@ const createSocketWrapper = ({
     };
   };
 
-  const createConnectErrorState = ({ connectError }: { connectError: Error }): TConnectionState => {
+  const createConnectErrorState = ({ connectError }: { connectError: TConnectError }): TConnectionState => {
 
     const status = (): TUnixSocketStatus => {
       return {
         type: "connect-error",
-        error: connectError
+        errno: connectError.errno,
+        error: connectError.error
       };
     };
 
@@ -418,6 +425,7 @@ export {
 };
 
 export type {
+  TConnectError,
   TControlMessage,
   TUnixSocket,
 };

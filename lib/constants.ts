@@ -6,6 +6,12 @@ const EINPROGRESS = 115;
 const EAGAIN = 11;
 const EPIPE = 32;
 const ENOENT = 2;
+const EPERM = 1;
+const EACCES = 13;
+const ENOTDIR = 20;
+const ELOOP = 40;
+const EPROTOTYPE = 91;
+const ECONNREFUSED = 111;
 
 const F_GETFL = BigInt(3);
 const F_SETFL = BigInt(4);
@@ -29,6 +35,12 @@ export {
   EAGAIN,
   EPIPE,
   ENOENT,
+  EPERM,
+  EACCES,
+  ENOTDIR,
+  ELOOP,
+  EPROTOTYPE,
+  ECONNREFUSED,
 
   F_GETFL,
   F_SETFL,

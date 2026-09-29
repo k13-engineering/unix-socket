@@ -8,10 +8,18 @@ import {
   createUnixStreamSocketClient,
   createUnixStreamSocketServer,
   importConnectedSocket,
-  streamSocketPair
+  streamSocketPair,
+  type TUnixSocket
 } from "./index.ts";
 import { syscall, syscallNumbers } from "syscall-napi";
-import { F_SETFL } from "./constants.ts";
+import {
+  EAGAIN,
+  ECONNREFUSED,
+  ELOOP,
+  ENOENT,
+  ENOTDIR,
+  F_SETFL
+} from "./constants.ts";
 
 const withTemporarySocketPath = ({ fn }: { fn: (args: { socketPath: string }) => void }) => {
   const socketDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "unix-socket-"));
@@ -47,6 +55,23 @@ const isNonBlocking = ({ fd }: { fd: number }) => {
 
   // O_NONBLOCK, the flags are printed in octal
   return (parseInt(flagsLine.split(/\s+/)[1], 8) & 0o4000) !== 0;
+};
+
+const connectUntilConnectError = ({ socketPath, maxAttempts }: { socketPath: string, maxAttempts: number }) => {
+  const connectedClients: TUnixSocket[] = [];
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const client = createUnixStreamSocketClient({ socketPath });
+
+    if (client.status().type !== "open") {
+      return { client, connectedClients };
+    }
+
+    // eslint-disable-next-line fp/no-mutating-methods
+    connectedClients.push(client);
+  }
+
+  throw Error(`no connect error after ${maxAttempts} attempts`);
 };
 
 describe("index", () => {
@@ -137,9 +162,71 @@ describe("index", () => {
     assert.equal(nonBlockingAfterImport, true);
   });
 
-  it("should report a connect error when the socket path does not exist", () => {
-    const client = createUnixStreamSocketClient({ socketPath: "/nonexistent/unix-socket.sock" });
-    assert.equal(client.status().type, "connect-error");
+  [
+    {
+      condition: "the socket file does not exist",
+      expectedErrno: ENOENT,
+      connect: ({ socketPath }: { socketPath: string }) => {
+        return createUnixStreamSocketClient({ socketPath });
+      }
+    },
+    {
+      condition: "a path component is not a directory",
+      expectedErrno: ENOTDIR,
+      connect: ({ socketPath }: { socketPath: string }) => {
+        fs.writeFileSync(socketPath, "");
+        return createUnixStreamSocketClient({ socketPath: path.join(socketPath, "server.sock") });
+      }
+    },
+    {
+      condition: "the path is a symlink loop",
+      expectedErrno: ELOOP,
+      connect: ({ socketPath }: { socketPath: string }) => {
+        fs.symlinkSync(socketPath, socketPath);
+        return createUnixStreamSocketClient({ socketPath });
+      }
+    },
+    {
+      condition: "nobody listens on the socket",
+      expectedErrno: ECONNREFUSED,
+      connect: ({ socketPath }: { socketPath: string }) => {
+        const { server } = createUnixStreamSocketServer({ socketPath });
+        assert.ok(server);
+
+        const client = createUnixStreamSocketClient({ socketPath });
+        server.close();
+        return client;
+      }
+    },
+    {
+      condition: "the listen backlog of the server is full",
+      expectedErrno: EAGAIN,
+      connect: ({ socketPath }: { socketPath: string }) => {
+        const { server } = createUnixStreamSocketServer({ socketPath });
+        assert.ok(server);
+        assert.equal(server.listen({ backlog: 0 }).error, undefined);
+
+        // nobody accepts, so the backlog fills up after a few connections
+        const { client, connectedClients } = connectUntilConnectError({ socketPath, maxAttempts: 16 });
+
+        connectedClients.forEach((connectedClient) => {
+          connectedClient.close();
+        });
+        server.close();
+        return client;
+      }
+    }
+  ].forEach(({ condition, expectedErrno, connect }) => {
+    it(`should report a connect error when ${condition}`, () => {
+      withTemporarySocketPath({
+        fn: ({ socketPath }) => {
+          const status = connect({ socketPath }).status();
+
+          assert.equal(status.type, "connect-error");
+          assert.equal(status.type === "connect-error" ? status.errno : undefined, expectedErrno);
+        }
+      });
+    });
   });
 
   it("should release the socket fd on close", () => {

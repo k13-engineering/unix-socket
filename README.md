@@ -31,3 +31,17 @@ if (status.type === "connect-error") {
   client.close();
 }
 ```
+
+## Connect errors
+
+`createUnixStreamSocketClient` doesn't throw because of what is, or isn't, at `socketPath`. It returns a socket in the `"connect-error"` state, whose `status()` has the `errno` and an `error` describing the problem:
+
+| `errno`                      | Meaning                                                               |
+| ---------------------------- | --------------------------------------------------------------------- |
+| `ENOENT`, `ENOTDIR`, `ELOOP` | There is no socket file at the path                                   |
+| `EACCES`, `EPERM`            | No permission to connect                                              |
+| `ECONNREFUSED`               | Nobody is listening, e.g. the socket file of a server that has exited |
+| `EAGAIN`                     | The server's listen backlog is full; try again later                  |
+| `EPROTOTYPE`                 | The socket at the path is not a stream socket                         |
+
+Compare `errno` with the values in `os.constants.errno` from `node:os`. Any other connect failure throws.

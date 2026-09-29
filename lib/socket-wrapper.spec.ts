@@ -4,6 +4,7 @@ import { createSocketWrapper, type TControlMessage, type TUnixSocket } from "./s
 import type { TSyscallInterface } from "./syscalls.ts";
 import {
   EAGAIN,
+  ECONNREFUSED,
   EPIPE,
   MSG_CTRUNC,
   MSG_TRUNC,
@@ -65,14 +66,15 @@ describe("socket-wrapper", () => {
       const wrapper = createSocketWrapper({
         syscallInterface: createMockSyscallInterface(),
         socketFd: 5,
-        connectError: Error("connection refused")
+        connectError: { errno: ECONNREFUSED, error: Error("connection refused") }
       });
 
       const status = wrapper.status();
-      assert.equal(status.type, "connect-error");
-      if (status.type === "connect-error") {
-        assert.equal(status.error.message, "connection refused");
-      }
+      assert.deepEqual(status, {
+        type: "connect-error",
+        errno: ECONNREFUSED,
+        error: Error("connection refused")
+      });
     });
 
     [
@@ -105,7 +107,7 @@ describe("socket-wrapper", () => {
         const wrapper = createSocketWrapper({
           syscallInterface: createMockSyscallInterface(),
           socketFd: 5,
-          connectError: Error("connection refused")
+          connectError: { errno: ECONNREFUSED, error: Error("connection refused") }
         });
 
         assert.throws(() => {
@@ -136,7 +138,7 @@ describe("socket-wrapper", () => {
           }
         }),
         socketFd: 5,
-        connectError: Error("connection refused")
+        connectError: { errno: ECONNREFUSED, error: Error("connection refused") }
       });
 
       assert.throws(() => {

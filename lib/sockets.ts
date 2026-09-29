@@ -1,7 +1,14 @@
 import { createUnixSocketAddressAsBuffer } from "./abi.ts";
 import {
   AF_UNIX,
+  EACCES,
+  EAGAIN,
+  ECONNREFUSED,
+  ELOOP,
   ENOENT,
+  ENOTDIR,
+  EPERM,
+  EPROTOTYPE,
   F_GETFL,
   F_SETFL,
   O_NONBLOCK,
@@ -12,8 +19,21 @@ import {
   createUnixStreamSocketServerWrapper,
   type TUnixStreamSocketServer
 } from "./server-wrapper.ts";
-import { createSocketWrapper, type TUnixSocket } from "./socket-wrapper.ts";
+import { createSocketWrapper, type TConnectError, type TUnixSocket } from "./socket-wrapper.ts";
 import type { TSyscallInterface } from "./syscalls.ts";
+
+// failures of connect that depend on what is (or isn't) at the socket path rather than on a bug,
+// a client has to expect them, so they are reported via the connect-error state instead of an exception
+const routineConnectErrors = [
+  { errno: ENOENT, description: "No such file or directory" },
+  { errno: ENOTDIR, description: "Not a directory" },
+  { errno: ELOOP, description: "Too many levels of symbolic links" },
+  { errno: EACCES, description: "Permission denied" },
+  { errno: EPERM, description: "Operation not permitted" },
+  { errno: ECONNREFUSED, description: "Connection refused" },
+  { errno: EAGAIN, description: "Listen backlog of the server is full" },
+  { errno: EPROTOTYPE, description: "Protocol wrong type for socket" }
+];
 
 type TStreamSocketPairResult = {
   errno: undefined;
@@ -62,7 +82,7 @@ const createSocketsFactory = ({
       socketAddressAsBuffer
     });
 
-    let connectError: Error | undefined = undefined;
+    let connectError: TConnectError | undefined = undefined;
 
     if (errno !== undefined) {
 
@@ -74,11 +94,18 @@ const createSocketsFactory = ({
         throw Error(`close syscall failed with errno ${closeErrno}`);
       }
 
-      if (errno === ENOENT) {
-        connectError = Error(`No such file or directory: ${socketPath}`);
-      } else {
+      const routineConnectError = routineConnectErrors.find((candidate) => {
+        return candidate.errno === errno;
+      });
+
+      if (routineConnectError === undefined) {
         throw Error(`connect syscall failed with errno ${errno}`);
       }
+
+      connectError = {
+        errno,
+        error: Error(`${routineConnectError.description}: ${socketPath}`)
+      };
     }
 
     return createSocketWrapper({
